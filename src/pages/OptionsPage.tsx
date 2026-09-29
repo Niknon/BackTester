@@ -11,6 +11,7 @@ import { fmtNum, fmtPct, fmtPrice, fmtShortDate, fmtTime, fmtUsd, pnlClass, auto
 import { Badge, cx, Empty, NumInput, Row, Segmented, Tabs } from '../components/ui';
 import { PayoffChart, breakevens, payoffAtExpiry, type PayoffLeg } from '../components/options/PayoffChart';
 import { PriceChart } from '../components/chart/PriceChart';
+import { XYChart } from '../components/options/VolCharts';
 
 const BASES = ASSETS.filter((a) => a.hasOptions);
 
@@ -77,7 +78,7 @@ export function OptionsPage() {
   const expiries = loaded ? ex.optionExpiries(base) : [];
   const [expiry, setExpiry] = useState<number>(0);
   const [draft, setDraft] = useState<Draft | null>(null);
-  const [bottom, setBottom] = useState<'positions' | 'orders' | 'builder' | 'history' | 'chart'>('positions');
+  const [bottom, setBottom] = useState<'positions' | 'orders' | 'builder' | 'history' | 'chart' | 'vol'>('positions');
   const [builder, setBuilder] = useState<BuilderLeg[]>([]);
   const [greekCols, setGreekCols] = useState(false);
 
@@ -200,6 +201,7 @@ export function OptionsPage() {
             { value: 'orders', label: `Ордера (${optOrders.length})` },
             { value: 'builder', label: `Конструктор стратегий${builder.length ? ` (${builder.length})` : ''}` },
             { value: 'history', label: 'История' },
+            { value: 'vol', label: 'Улыбка и структура IV' },
             { value: 'chart', label: `График ${underlying}` },
           ]}
         />
@@ -261,12 +263,48 @@ export function OptionsPage() {
             ) : (
               <Empty>История пуста</Empty>
             ))}
+          {bottom === 'vol' && chain && <VolPanel chain={chain} base={base} expiries={expiries} />}
           {bottom === 'chart' && (
             <div className="h-full p-1">
               <PriceChart symbol={underlying} tf={chartTf} onTfChange={(t) => set({ chartTf: t })} compact />
             </div>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+function VolPanel({ chain, base, expiries }: { chain: NonNullable<ReturnType<import('../engine/exchange').Exchange['optionChain']>>; base: string; expiries: number[] }) {
+  const ex = useSession((s) => s.ex)!;
+  const smile = useMemo(
+    () => [
+      { name: 'IV коллов', color: '#20b26c', points: chain.rows.map((r) => ({ x: r.strike, y: r.call.iv * 100 })) },
+      { name: 'IV путов', color: '#ef454a', points: chain.rows.map((r) => ({ x: r.strike, y: r.put.iv * 100 })), dashed: true },
+    ],
+    [chain],
+  );
+  const term = useMemo(() => {
+    const vol = ex.volInputs(`${base}USDT`);
+    return [
+      {
+        name: 'ATM IV',
+        color: '#f7a600',
+        points: expiries.map((e) => ({ x: (e - ex.now) / DAY, y: atmIv(ex.config.options, vol, yearsTo(e, ex.now)) * 100 })),
+      },
+    ];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [base, expiries.join(), ex.now]);
+  const dec = chain.S >= 100 ? 0 : chain.S >= 1 ? 2 : 4;
+  return (
+    <div className="grid grid-cols-2 gap-2 p-2">
+      <div>
+        <div className="text-[11px] text-muted mb-1">Улыбка волатильности (IV по страйкам), %</div>
+        <XYChart lines={smile} height={250} xDecimals={dec} />
+      </div>
+      <div>
+        <div className="text-[11px] text-muted mb-1">Временная структура ATM IV (ось X — дней до экспирации), %</div>
+        <XYChart lines={term} height={250} xDecimals={2} />
       </div>
     </div>
   );
@@ -320,7 +358,9 @@ function ChainTable({
   const atmRef = useRef<HTMLTableRowElement>(null);
   const expiryKey = chain?.rows[0]?.call.inst.expiry ?? 0;
   useEffect(() => {
-    atmRef.current?.scrollIntoView({ block: 'center' });
+    const el = atmRef.current;
+    const sc = el?.closest('.overflow-auto') as HTMLElement | null;
+    if (el && sc) sc.scrollTop += el.getBoundingClientRect().top - sc.getBoundingClientRect().top - sc.clientHeight / 2;
   }, [base, expiryKey]);
   if (!chain || !chain.rows.length) return <Empty>Нет котировок</Empty>;
   const pos = ex.main.positions;

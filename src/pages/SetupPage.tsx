@@ -182,8 +182,16 @@ function SavedList() {
   );
 }
 
+let bybitSynced = false;
+
 export function SetupPage() {
   const hasEx = useSession((s) => !!s.ex);
+  // тихая синхронизация спецификаций с Bybit (если API доступен)
+  useEffect(() => {
+    if (bybitSynced) return;
+    bybitSynced = true;
+    syncInstrumentsFromBybit().catch(() => {});
+  }, []);
   const setS = useSession((s) => s.set);
   const today = dayStart(Date.now());
   const [name, setName] = useState(`Сессия ${new Date().toLocaleDateString('ru-RU')}`);

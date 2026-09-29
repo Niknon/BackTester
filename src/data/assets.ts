@@ -141,6 +141,12 @@ export function registerAsset(spec: AssetSpec) {
   BY_SYMBOL.set(spec.symbol, i >= 0 ? ASSETS[i] : spec);
 }
 
+/** Спецификация вне курируемого списка (синхронизирована с биржей) — не показывается в пикере. */
+export function registerExtra(spec: AssetSpec) {
+  if (!BY_SYMBOL.has(spec.symbol)) BY_SYMBOL.set(spec.symbol, spec);
+  else Object.assign(BY_SYMBOL.get(spec.symbol)!, spec);
+}
+
 export function updateAssetSpec(symbol: string, patch: Partial<AssetSpec>) {
   const a = BY_SYMBOL.get(symbol);
   if (a) Object.assign(a, patch);

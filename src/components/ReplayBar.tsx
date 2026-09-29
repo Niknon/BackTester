@@ -127,6 +127,9 @@ export function ReplayBar() {
           <Check checked={prefs.pauseOnLiquidation} onChange={(v) => setPrefs({ pauseOnLiquidation: v })}>
             Пауза при ликвидации
           </Check>
+          <Check checked={prefs.autosave} onChange={(v) => setPrefs({ autosave: v })}>
+            Автосохранение раз в минуту
+          </Check>
           <div className="text-[11px] text-dim pt-1 border-t border-line">
             Горячие клавиши: <span className="kbd">Пробел</span> — старт/пауза, <span className="kbd">→</span> — бар, <span className="kbd">Shift+→</span> — свеча
           </div>

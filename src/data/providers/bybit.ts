@@ -1,7 +1,7 @@
 import { apiGet, pool } from '../http';
 import { intervalDef } from '../intervals';
 import type { Candle, FundingPoint, IntervalKey } from '../types';
-import { ASSETS, BYBIT_OPTION_BASES, registerAsset, updateAssetSpec, type AssetSpec } from '../assets';
+import { ASSETS, BYBIT_OPTION_BASES, registerExtra, updateAssetSpec, type AssetSpec } from '../assets';
 import type { DataProvider, FetchOpts } from './provider';
 
 const PROXY = '/proxy/bybit';
@@ -98,7 +98,7 @@ export async function syncInstrumentsFromBybit(signal?: AbortSignal): Promise<nu
       const known = ASSETS.find((a) => a.symbol === it.symbol);
       if (known) updateAssetSpec(it.symbol, patch);
       else
-        registerAsset({
+        registerExtra({
           symbol: it.symbol,
           base: it.baseCoin,
           name: it.baseCoin,

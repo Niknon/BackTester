@@ -45,6 +45,7 @@ export interface Prefs {
   chartType: 'candles' | 'bars' | 'line' | 'heikin';
   indicators: IndicatorConfig[];
   speed: number;
+  autosave: boolean;
 }
 
 export const DEFAULT_INDICATORS: IndicatorConfig[] = [
@@ -79,6 +80,7 @@ function loadPrefs(): Prefs {
     chartType: 'candles',
     indicators: DEFAULT_INDICATORS,
     speed: 20,
+    autosave: true,
   };
   try {
     const raw = localStorage.getItem(PREFS_KEY);

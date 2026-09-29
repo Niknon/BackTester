@@ -123,6 +123,7 @@ export async function startSession(cfg: SessionConfig) {
     cfg.symbols = market.symbols();
     const ex = Exchange.create(cfg, market);
     attachEvents(ex);
+    startAutosave();
     const errs = useSession.getState().progress?.errors ?? [];
     const first = cfg.symbols[0];
     useSession.setState({
@@ -316,7 +317,7 @@ export interface SavedSession {
   summary: { equity: number; cursor: number; total: number; now: number };
 }
 
-export async function saveSession(name?: string) {
+export async function saveSession(name?: string, silent = false) {
   const ex = useSession.getState().ex;
   if (!ex) return;
   const eq = ex.totalEquity();
@@ -330,8 +331,23 @@ export async function saveSession(name?: string) {
     summary: { equity: eq.total, cursor: ex.state.cursor, total: ex.market.totalBars, now: ex.now },
   };
   await idbSet('sessions', rec.id, rec);
+  lastSavedCursor = ex.state.cursor;
   useSession.setState({ savedAt: rec.savedAt });
-  toast('success', 'Сессия сохранена', rec.name);
+  if (!silent) toast('success', 'Сессия сохранена', rec.name);
+}
+
+/* автосохранение раз в минуту, если симуляция продвинулась */
+let lastSavedCursor = -1;
+let autosaveTimer: ReturnType<typeof setInterval> | null = null;
+function startAutosave() {
+  if (autosaveTimer) clearInterval(autosaveTimer);
+  lastSavedCursor = -1;
+  autosaveTimer = setInterval(() => {
+    const ex = useSession.getState().ex;
+    if (!ex || !useSession.getState().prefs.autosave) return;
+    if (ex.state.cursor === lastSavedCursor || ex.state.cursor === 0) return;
+    saveSession(undefined, true).catch(() => {});
+  }, 60_000);
 }
 
 export async function listSessions(): Promise<SavedSession[]> {
@@ -367,6 +383,7 @@ export async function restoreSession(saved: SavedSession) {
     }
     const ex = Exchange.restore(state, market);
     attachEvents(ex);
+    startAutosave();
     useSession.setState({
       ex,
       status: 'ready',
