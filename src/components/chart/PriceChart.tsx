@@ -25,7 +25,7 @@ import { aggregate, appendAggregate, type Ohlcv } from '../../engine/aggregate';
 import { MAIN } from '../../engine/exchange';
 import type { Category } from '../../engine/types';
 import { fmtNum, fmtPrice, priceDecimals } from '../../lib/format';
-import { useSession, useTick, type IndicatorConfig } from '../../store/session';
+import { bump, toast, useSession, useTick, type IndicatorConfig } from '../../store/session';
 import { useDrawings, type DrawTool } from '../../store/drawings';
 import { computeIndicator, heikinAshi, IND_META, indicatorLabel, type IndSeries } from './indicatorSeries';
 import { DrawingLayer } from './DrawingLayer';
@@ -54,6 +54,8 @@ export interface ExtraLine {
   style?: LineStyle;
   width?: 1 | 2;
   axis?: boolean;
+  /** линию можно перетаскивать: изменить цену ордера / TP / SL */
+  drag?: 'price' | 'trigger';
 }
 
 interface Props {
@@ -94,7 +96,8 @@ export function PriceChart({ symbol, tf, onTfChange, category = 'linear', accoun
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const dataRef = useRef<ChartData | null>(null);
   const indRef = useRef<IndHandle | null>(null);
-  const linesRef = useRef(new Map<string, { line: IPriceLine; sig: string }>());
+  const linesRef = useRef(new Map<string, { line: IPriceLine; sig: string; price: number; drag?: 'price' | 'trigger' }>());
+  const dragRef = useRef<{ id: string; kind: 'price' | 'trigger'; price: number } | null>(null);
   const markerSigRef = useRef('');
   const [chart, setChart] = useState<IChartApi | null>(null);
   const [legend, setLegend] = useState<{ o: number; h: number; l: number; c: number; v: number; t: number } | null>(null);
@@ -133,12 +136,9 @@ export function PriceChart({ symbol, tf, onTfChange, category = 'linear', accoun
     });
     chartRef.current = c;
     setChart(c);
-    c.subscribeClick((p) => {
+    if (import.meta.env.DEV) (window as any).__chart = { chart: c, main: () => mainRef.current };
+    c.subscribeClick(() => {
       useDrawings.getState().select(null);
-      if (p.point && mainRef.current && onPriceClickRef.current) {
-        const price = mainRef.current.coordinateToPrice(p.point.y);
-        if (price !== null) onPriceClickRef.current(price);
-      }
     });
     return () => {
       c.remove();
@@ -292,7 +292,8 @@ export function PriceChart({ symbol, tf, onTfChange, category = 'linear', accoun
         }
       }
       const panes = c.panes();
-      for (let i = 1; i < panes.length; i++) panes[i].setHeight(Math.max(70, Math.round((wrapRef.current?.clientHeight ?? 500) * 0.16)));
+      panes[0]?.setStretchFactor(1);
+      for (let i = 1; i < panes.length; i++) panes[i].setStretchFactor(panes.length > 3 ? 0.22 : 0.3);
     }
     const allSpecs: IndSeries[] = [];
     for (const cfg of indicators) allSpecs.push(...computeIndicator(cfg, agg));
@@ -395,13 +396,14 @@ export function PriceChart({ symbol, tf, onTfChange, category = 'linear', accoun
             id: o.id,
             price: o.triggerPrice!,
             color: isTp ? '#20b26c' : '#ef454a',
-            title: o.stopOrderType === 'TrailingStop' ? 'Трейлинг' : isTp ? 'TP' : 'SL',
+            title: o.stopOrderType === 'TrailingStop' ? 'Трейлинг' : isTp ? 'TP ⇕' : 'SL ⇕',
             style: LineStyle.Dotted,
+            drag: o.stopOrderType === 'TrailingStop' ? undefined : 'trigger',
           });
         } else if (o.status === 'Untriggered') {
-          want.push({ id: o.id, price: o.triggerPrice!, color: '#a78bfa', title: `Условн. ${o.side === 'Buy' ? 'B' : 'S'} ${o.qty}`, style: LineStyle.Dotted });
+          want.push({ id: o.id, price: o.triggerPrice!, color: '#a78bfa', title: `Условн. ${o.side === 'Buy' ? 'B' : 'S'} ${o.qty} ⇕`, style: LineStyle.Dotted, drag: 'trigger' });
         } else if (o.orderType === 'Limit') {
-          want.push({ id: o.id, price: o.price, color: o.side === 'Buy' ? '#20b26c' : '#ef454a', title: `Лимит ${o.side === 'Buy' ? 'B' : 'S'} ${o.qty}`, style: LineStyle.Dashed });
+          want.push({ id: o.id, price: o.price, color: o.side === 'Buy' ? '#20b26c' : '#ef454a', title: `Лимит ${o.side === 'Buy' ? 'B' : 'S'} ${o.qty} ⇕`, style: LineStyle.Dashed, drag: 'price' });
         }
       }
     }
@@ -429,6 +431,7 @@ export function PriceChart({ symbol, tf, onTfChange, category = 'linear', accoun
     for (const w of want) {
       if (!Number.isFinite(w.price)) continue;
       seen.add(w.id);
+      if (dragRef.current?.id === w.id) continue;
       const sig2 = `${w.price}|${w.color}|${w.title}|${w.style}`;
       const cur = linesRef.current.get(w.id);
       const opts = {
@@ -439,10 +442,14 @@ export function PriceChart({ symbol, tf, onTfChange, category = 'linear', accoun
         lineWidth: w.width ?? 1,
         axisLabelVisible: w.axis ?? true,
       };
-      if (!cur) linesRef.current.set(w.id, { line: main.createPriceLine(opts), sig: sig2 });
-      else if (cur.sig !== sig2) {
-        cur.line.applyOptions(opts);
-        cur.sig = sig2;
+      if (!cur) linesRef.current.set(w.id, { line: main.createPriceLine(opts), sig: sig2, price: w.price, drag: w.drag });
+      else {
+        cur.drag = w.drag;
+        cur.price = w.price;
+        if (cur.sig !== sig2) {
+          cur.line.applyOptions(opts);
+          cur.sig = sig2;
+        }
       }
     }
     for (const [id, l] of linesRef.current) {
@@ -452,6 +459,71 @@ export function PriceChart({ symbol, tf, onTfChange, category = 'linear', accoun
       }
     }
   }
+
+  /* ── перетаскивание линий ордеров / TP / SL ── */
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const hit = (clientY: number) => {
+      const main = mainRef.current;
+      const c = chartRef.current;
+      if (!main || !c) return null;
+      const r = el.getBoundingClientRect();
+      const y = clientY - r.top;
+      if (y > (c.panes()[0]?.getHeight() ?? 0)) return null;
+      let best: { id: string; kind: 'price' | 'trigger'; d: number; price: number } | null = null;
+      for (const [id, l] of linesRef.current) {
+        if (!l.drag) continue;
+        const ly = main.priceToCoordinate(l.price);
+        if (ly === null) continue;
+        const d = Math.abs(ly - y);
+        if (d <= 5 && (!best || d < best.d)) best = { id, kind: l.drag, d, price: l.price };
+      }
+      return best;
+    };
+    const onDown = (e: MouseEvent) => {
+      if (e.button !== 0 || useDrawings.getState().tool !== 'cursor') return;
+      const h = hit(e.clientY);
+      if (!h) return;
+      e.stopPropagation();
+      e.preventDefault();
+      dragRef.current = { id: h.id, kind: h.kind, price: h.price };
+    };
+    const onMove = (e: MouseEvent) => {
+      const d = dragRef.current;
+      const main = mainRef.current;
+      if (!d) {
+        if (e.target instanceof Node && el.contains(e.target)) el.style.cursor = hit(e.clientY) ? 'ns-resize' : '';
+        return;
+      }
+      if (!main) return;
+      const r = el.getBoundingClientRect();
+      const p = main.coordinateToPrice(e.clientY - r.top);
+      if (p === null) return;
+      d.price = p as number;
+      linesRef.current.get(d.id)?.line.applyOptions({ price: d.price });
+      e.stopPropagation();
+    };
+    const onUp = () => {
+      const d = dragRef.current;
+      if (!d) return;
+      dragRef.current = null;
+      const err = ex.amendOrder(d.id, d.kind === 'price' ? { price: d.price } : { triggerPrice: d.price });
+      if (err) toast('error', 'Ордер не изменён', err);
+      else toast('info', 'Ордер изменён', `Новая цена ${fmtPrice(d.price, symbol)}`, 2000);
+      const l = linesRef.current.get(d.id);
+      if (l) l.sig = '';
+      bump(true);
+    };
+    el.addEventListener('mousedown', onDown, true);
+    window.addEventListener('mousemove', onMove, true);
+    window.addEventListener('mouseup', onUp, true);
+    return () => {
+      el.removeEventListener('mousedown', onDown, true);
+      window.removeEventListener('mousemove', onMove, true);
+      window.removeEventListener('mouseup', onUp, true);
+    };
+  }, [ex, symbol]);
 
   const tfs = useMemo(() => chartIntervalsFor(ex.config.baseInterval), [ex.config.baseInterval]);
   const chg = legend ? legend.c - legend.o : 0;
@@ -561,7 +633,21 @@ export function PriceChart({ symbol, tf, onTfChange, category = 'linear', accoun
           </div>
         )}
       <div className="relative flex-1 min-w-0">
-        <div ref={wrapRef} className="absolute inset-0" />
+        <div
+          ref={wrapRef}
+          className="absolute inset-0"
+          onContextMenu={(e) => {
+            const main = mainRef.current;
+            if (!main || !onPriceClickRef.current) return;
+            e.preventDefault();
+            const r = e.currentTarget.getBoundingClientRect();
+            const p = main.coordinateToPrice(e.clientY - r.top);
+            if (p !== null) {
+              onPriceClickRef.current(p as number);
+              toast('info', `Цена ${fmtPrice(p as number, symbol)} подставлена в форму ордера`, undefined, 1800);
+            }
+          }}
+        />
         {legend && (
           <div className="absolute left-2 top-1.5 z-20 pointer-events-none text-[11px] num flex flex-wrap gap-x-2">
             <span className="text-text font-semibold">{symbol}</span>

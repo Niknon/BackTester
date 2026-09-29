@@ -709,6 +709,13 @@ export class Exchange {
     }
     if (patch.price !== undefined && o.orderType === 'Limit') o.price = spec ? roundToStep(patch.price, spec.tickSize) : patch.price;
     if (patch.triggerPrice !== undefined && o.status === 'Untriggered') {
+      if (o.tag === 'tpsl' && (o.stopOrderType === 'TakeProfit' || o.stopOrderType === 'StopLoss')) {
+        const last = this.price(o.symbol);
+        const long = o.side === 'Sell'; // закрывающий ордер лонга — продажа
+        const tp = o.stopOrderType === 'TakeProfit';
+        const ok = tp ? (long ? patch.triggerPrice > last : patch.triggerPrice < last) : long ? patch.triggerPrice < last : patch.triggerPrice > last;
+        if (!ok) return `${tp ? 'TP' : 'SL'} должен быть ${(tp === long) ? 'выше' : 'ниже'} текущей цены`;
+      }
       o.triggerPrice = spec ? roundToStep(patch.triggerPrice, spec.tickSize) : patch.triggerPrice;
       const last = this.price(this.dataSymbol(o.category, o.symbol));
       if (o.stopOrderType !== 'TakeProfit' && o.stopOrderType !== 'StopLoss')
@@ -1741,9 +1748,11 @@ export class Exchange {
       if (this.config.fundingEnabled) {
         for (const [sym, i] of bars) {
           const open = this.market.series.get(sym)!.o[i];
-          const pts = this.market.fundingIn(sym, t, tEnd);
-          if (pts.length) for (const f of pts) this.applyFunding(sym, f.rate, open);
-          else if (!this.market.funding.get(sym)?.length) {
+          const hist = this.market.funding.get(sym);
+          // история funding покрывает этот момент? (иначе — ставка по умолчанию каждые 8 ч)
+          const covered = !!hist && hist.length > 0 && t >= hist[0].t - 8 * HOUR && t <= hist[hist.length - 1].t + 8 * HOUR;
+          if (covered) for (const f of this.market.fundingIn(sym, t, tEnd)) this.applyFunding(sym, f.rate, open);
+          else {
             const step8 = 8 * HOUR;
             for (let ft = Math.ceil(t / step8) * step8; ft < tEnd; ft += step8) this.applyFunding(sym, this.config.defaultFundingRate, open);
           }

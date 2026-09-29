@@ -76,7 +76,8 @@ export function EquityChart({ equity, bench, benchLabel = 'Бенчмарк (buy
         { color: 'rgba(239,69,74,0.55)', priceLineVisible: false, priceFormat: { type: 'percent' } as any, title: 'Просадка %' },
         1,
       );
-      c.panes()[1]?.setHeight(80);
+      c.panes()[0]?.setStretchFactor(1);
+      c.panes()[1]?.setStretchFactor(0.3);
     }
     chart.current = c;
     return () => {

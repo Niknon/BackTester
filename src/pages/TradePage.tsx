@@ -55,7 +55,7 @@ export function TradePage({ category }: { category: Category }) {
         <TickerBar symbol={sym} onSymbol={onSymbol} spot={category === 'spot'} />
         <div className="flex-1 min-h-0 flex gap-1">
           <div className="flex-1 min-w-0">
-            <PriceChart symbol={sym} tf={tf} onTfChange={(t) => set({ chartTf: t })} category={category} />
+            <PriceChart symbol={sym} tf={tf} onTfChange={(t) => set({ chartTf: t })} category={category} onPriceClick={onPrice} />
           </div>
           <div className="w-[270px] shrink-0">
             <OrderBook symbol={sym} onPrice={onPrice} />
