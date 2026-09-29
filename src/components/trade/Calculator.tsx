@@ -25,7 +25,7 @@ export function Calculator({ symbol, open, onClose }: { symbol: string; open: bo
   const mmr = maintenanceMarginRate(symbol) + taker;
   let body: React.ReactNode = null;
   if (tab === 'pnl') {
-    const X = Number(exit) || 0;
+    const X = Number(exit) || NaN;
     const pnl = Q * (X - E) * dir;
     const fees = Q * (E + X) * taker;
     body = (
@@ -36,7 +36,7 @@ export function Calculator({ symbol, open, onClose }: { symbol: string; open: bo
           <Row label="PnL (без комиссий)" value={<span className={pnlClass(pnl)}>{fmtUsd(pnl, 2, true)} USDT</span>} />
           <Row label="Комиссии (тейкер ×2)" value={`${fmtUsd(fees)} USDT`} />
           <Row label="PnL после комиссий" value={<span className={pnlClass(pnl - fees)}>{fmtUsd(pnl - fees, 2, true)} USDT</span>} />
-          <Row label="ROI" value={<span className={pnlClass(pnl)}>{im > 0 ? fmtPct(pnl / im) : '—'}</span>} />
+          <Row label="ROI" value={<span className={pnlClass(pnl)}>{im > 0 && Number.isFinite(pnl) ? fmtPct(pnl / im) : '—'}</span>} />
         </div>
       </>
     );
