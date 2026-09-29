@@ -22,6 +22,8 @@ function useHotkeys() {
       if (!useSession.getState().ex) return;
       if (e.code === 'Space') {
         e.preventDefault();
+        // не «нажимать» повторно кнопку, на которой остался фокус (например, «Купить»)
+        if (t && t.tagName === 'BUTTON') t.blur();
         togglePlay();
       } else if (e.code === 'ArrowRight' && e.shiftKey) {
         e.preventDefault();

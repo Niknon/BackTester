@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useSession, useTick } from '../store/session';
-import { fastForward, pause, play, setSpeed, stepBars, stepCandle } from '../store/actions';
+import { fastForward, getCheckpoints, pause, play, rewindTo, setSpeed, stepBars, stepCandle } from '../store/actions';
 import { cx, Dropdown, Check } from './ui';
 import { fmtNum, fmtTime, toDateInput, fromDateInput } from '../lib/format';
 import { intervalDef } from '../data/intervals';
@@ -82,6 +82,31 @@ export function ReplayBar() {
           <span>{fmtTime(ex.market.end)}</span>
         </div>
       </div>
+      <Dropdown align="right" width={300} button={<button className="btn btn-ghost h-8" title="Вернуться к контрольной точке">⏪ Назад</button>}>
+        {(close: () => void) => (
+          <div className="p-2 flex flex-col gap-1 max-h-[60vh] overflow-auto">
+            <div className="text-muted text-[11px] px-1 pb-1">Контрольные точки создаются автоматически (каждые сутки/неделю, при ваших сделках, перед перемоткой).</div>
+            {getCheckpoints()
+              .slice()
+              .reverse()
+              .map((cp) => (
+                <button
+                  key={cp.cursor + cp.label}
+                  className="text-left px-2 py-1.5 rounded hover:bg-panel3 flex justify-between gap-2"
+                  onClick={() => {
+                    close();
+                    rewindTo(cp);
+                  }}
+                >
+                  <span>
+                    <span className="num">{fmtTime(cp.now)}</span> <span className="text-muted text-[11px]">{cp.label}</span>
+                  </span>
+                  <span className="num text-muted">{fmtNum(cp.equity, 0)}</span>
+                </button>
+              ))}
+          </div>
+        )}
+      </Dropdown>
       <Dropdown
         align="right"
         width={280}

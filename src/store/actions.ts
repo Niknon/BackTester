@@ -59,6 +59,59 @@ async function loadSymbolInto(market: MarketData, cfg: SessionConfig, symbol: st
   return res.provider;
 }
 
+/* ───────────────────────── Контрольные точки (перемотка назад) ───────────────────────── */
+
+export interface Checkpoint {
+  now: number;
+  cursor: number;
+  label: string;
+  json: string;
+  equity: number;
+}
+
+let checkpoints: Checkpoint[] = [];
+let lastCheckpointWall = 0;
+const MAX_CHECKPOINTS = 60;
+
+export function getCheckpoints() {
+  return checkpoints;
+}
+
+function resetCheckpoints(ex: Exchange) {
+  checkpoints = [];
+  lastCheckpointWall = 0;
+  saveCheckpoint(ex, 'Старт', true);
+}
+
+/** Сохранить снимок состояния (не чаще раза в 2 с реального времени, кроме принудительных). */
+export function saveCheckpoint(ex: Exchange, label: string, force = false) {
+  const wall = performance.now();
+  if (!force && wall - lastCheckpointWall < 2000) return;
+  const last = checkpoints[checkpoints.length - 1];
+  if (last && last.cursor === ex.state.cursor && !force) return;
+  lastCheckpointWall = wall;
+  checkpoints.push({ now: ex.now, cursor: ex.state.cursor, label, json: ex.serialize(), equity: ex.totalEquity().total });
+  if (checkpoints.length > MAX_CHECKPOINTS) checkpoints.splice(1, 1); // «Старт» сохраняем всегда
+}
+
+/** Автоматические точки: на границе суток (или недели для крупных интервалов). */
+function autoCheckpoint(ex: Exchange, prevNow: number) {
+  const period = ex.market.dt >= 4 * 3_600_000 ? 7 * DAY : DAY;
+  if (Math.floor(prevNow / period) !== Math.floor(ex.now / period)) saveCheckpoint(ex, period === DAY ? 'Новые сутки' : 'Новая неделя');
+}
+
+export function rewindTo(cp: Checkpoint) {
+  const cur = useSession.getState().ex;
+  if (!cur) return;
+  pause();
+  const ex = Exchange.restore(cp.json, cur.market);
+  attachEvents(ex);
+  checkpoints = checkpoints.filter((c) => c.cursor <= cp.cursor);
+  useSession.setState({ ex });
+  toast('info', 'Перемотка назад', `Состояние на ${new Date(cp.now).toISOString().slice(0, 16).replace('T', ' ')} UTC восстановлено`);
+  bump(true);
+}
+
 function attachEvents(ex: Exchange) {
   unsubscribe?.();
   unsubscribe = ex.on((e: ExchangeEvent) => onEvent(ex, e));
@@ -69,6 +122,7 @@ function onEvent(ex: Exchange, e: ExchangeEvent) {
   switch (e.type) {
     case 'fill': {
       if (e.exec.accountId !== MAIN || e.exec.execType !== 'Trade') return;
+      if (e.order?.tag === 'user') saveCheckpoint(ex, `Сделка ${e.exec.symbol}`);
       const x = e.exec;
       const cat = x.category === 'option' ? 'Опцион' : x.category === 'spot' ? 'Спот' : 'Перп';
       toast(
@@ -124,6 +178,7 @@ export async function startSession(cfg: SessionConfig) {
     const ex = Exchange.create(cfg, market);
     attachEvents(ex);
     startAutosave();
+    resetCheckpoints(ex);
     const errs = useSession.getState().progress?.errors ?? [];
     const first = cfg.symbols[0];
     useSession.setState({
@@ -214,6 +269,7 @@ function frame(ts: number) {
   acc -= n;
   const t0 = performance.now();
   stopRequested = false;
+  const prevNow = ex.now;
   while (n-- > 0) {
     if (!ex.step()) {
       pause();
@@ -226,6 +282,7 @@ function frame(ts: number) {
       break;
     }
   }
+  autoCheckpoint(ex, prevNow);
   bump();
   if (useSession.getState().playing) raf = requestAnimationFrame(frame);
   else raf = 0;
@@ -260,7 +317,9 @@ export function setSpeed(speed: number) {
 export function stepBars(n = 1) {
   const ex = useSession.getState().ex;
   if (!ex) return;
+  const prevNow = ex.now;
   for (let i = 0; i < n; i++) if (!ex.step()) break;
+  autoCheckpoint(ex, prevNow);
   bump(true);
 }
 
@@ -284,10 +343,11 @@ export async function fastForward(time: number) {
   pause();
   const target = Math.min(ex.market.totalBars, Math.ceil((time - ex.market.start) / ex.market.dt));
   if (target <= ex.state.cursor) {
-    toast('warn', 'Перемотка назад невозможна', 'Симуляция необратима — начните сессию заново или загрузите сохранение.');
+    toast('warn', 'Перемотка назад', 'Используйте кнопку ⏪ — возврат к контрольной точке (они создаются автоматически).');
     return;
   }
   const from = ex.state.cursor;
+  saveCheckpoint(ex, 'Перед перемоткой', true);
   useSession.setState({ progress: { title: 'Перемотка', message: 'Обработка баров…', done: 0, total: 1, errors: [] } });
   const quiet = ex.quiet;
   ex.quiet = true;
@@ -384,6 +444,7 @@ export async function restoreSession(saved: SavedSession) {
     const ex = Exchange.restore(state, market);
     attachEvents(ex);
     startAutosave();
+    resetCheckpoints(ex);
     useSession.setState({
       ex,
       status: 'ready',
