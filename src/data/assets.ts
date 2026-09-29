@@ -174,6 +174,17 @@ export function hasAsset(symbol: string) {
   return BY_SYMBOL.has(symbol);
 }
 
+/** Шаг количества для спота (на Bybit он значительно мельче, чем у перпетуалов). */
+export function spotQtyStep(symbol: string): number {
+  const a = getAsset(symbol);
+  const step = 10 ** Math.floor(Math.log10(5 / Math.max(1e-12, a.refPrice)));
+  return Math.min(a.qtyStep, Number(step.toPrecision(1)));
+}
+
+export function qtyStepFor(symbol: string, category: 'linear' | 'spot'): number {
+  return category === 'spot' ? spotQtyStep(symbol) : getAsset(symbol).qtyStep;
+}
+
 /** Ставка поддерживающей маржи первого тира риска (как у Bybit: MMR = IMRmin / 2). */
 export function maintenanceMarginRate(symbol: string): number {
   return 0.5 / getAsset(symbol).maxLeverage;

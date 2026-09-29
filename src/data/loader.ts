@@ -98,12 +98,16 @@ function dedupe(c: Candle[]): Candle[] {
   return out;
 }
 
+/** Источники, заблокированные в этой сессии браузера (гео-блок 403) — не дёргаем повторно. */
+const blocked = new Set<ProviderId>();
+
 export async function loadSeries(o: LoadOptions): Promise<LoadResult> {
   const order: ProviderId[] = [o.provider];
   if (o.fallback !== false && o.provider !== 'synthetic')
     for (const id of ['bybit', 'okx', 'binance'] as ProviderId[]) if (!order.includes(id)) order.push(id);
   const errors: string[] = [];
   for (const id of order) {
+    if (blocked.has(id)) continue;
     try {
       const series = await loadFrom(PROVIDERS[id], o);
       if (series.length === 0) {
@@ -113,7 +117,11 @@ export async function loadSeries(o: LoadOptions): Promise<LoadResult> {
       return { series, provider: id, errors };
     } catch (e: any) {
       if (e?.name === 'AbortError') throw e;
-      errors.push(`${PROVIDERS[id].label}: ${e?.message || e}`);
+      const msg = String(e?.message || e);
+      if (e?.status === 403 || /403|block|restricted/i.test(msg)) {
+        blocked.add(id);
+        errors.push(`${PROVIDERS[id].label} недоступен из вашего региона (HTTP 403) — используется резервный источник`);
+      } else errors.push(`${PROVIDERS[id].label}: ${msg.slice(0, 160)}`);
     }
   }
   throw new Error(`Не удалось загрузить ${o.symbol}:\n${errors.join('\n')}`);

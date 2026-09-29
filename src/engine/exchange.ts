@@ -1,4 +1,4 @@
-import { getAsset, maintenanceMarginRate, roundToStep } from '../data/assets';
+import { getAsset, maintenanceMarginRate, qtyStepFor, roundToStep } from '../data/assets';
 import { HOUR } from '../data/intervals';
 import { dvolAt, realizedVolAt } from '../data/volatility';
 import type { MarketData } from './market';
@@ -576,15 +576,17 @@ export class Exchange {
     const spec = getAsset(o.symbol);
     const last = this.price(o.symbol);
     if (!Number.isFinite(last)) return this.reject(o, 'Нет цены');
+    const qtyStep = qtyStepFor(o.symbol, o.category);
+    const minQty = o.category === 'spot' ? qtyStep : spec.minQty;
 
     // спот: покупка на сумму
     if (o.category === 'spot' && o.side === 'Buy' && o.orderType === 'Market' && o.quoteQty && !o.qty) {
-      o.qty = roundToStep(o.quoteQty / this.slip('Buy', last, o.symbol), spec.qtyStep, 'floor');
+      o.qty = roundToStep(o.quoteQty / this.slip('Buy', last, o.symbol), qtyStep, 'floor');
     }
-    o.qty = roundToStep(o.qty, spec.qtyStep, 'floor');
+    o.qty = roundToStep(o.qty, qtyStep, 'floor');
     if (o.orderType === 'Limit') o.price = roundToStep(o.price, spec.tickSize);
     if (o.triggerPrice !== undefined) o.triggerPrice = roundToStep(o.triggerPrice, spec.tickSize);
-    if (!(o.qty > 0) || o.qty < spec.minQty - EPS) return this.reject(o, `Мин. количество ${spec.minQty}`);
+    if (!(o.qty > 0) || o.qty < minQty - EPS) return this.reject(o, `Мин. количество ${minQty}`);
     if (o.orderType === 'Limit' && !(o.price > 0)) return this.reject(o, 'Некорректная цена');
     if (o.category === 'spot' && (o.reduceOnly || o.closeOnTrigger)) {
       o.reduceOnly = false;

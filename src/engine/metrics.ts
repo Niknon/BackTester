@@ -110,7 +110,7 @@ export function computeReport(
     if (x <= 0) maxConsec = Math.max(maxConsec, ++consec);
     else consec = 0;
   }
-  const holds = closed.filter((c) => c.closeTime > c.openTime).map((c) => c.closeTime - c.openTime);
+  const holds = closed.filter((c) => c.category !== 'spot' && c.closeTime > c.openTime).map((c) => c.closeTime - c.openTime);
   let benchReturn: number | null = null;
   if (extra.bench && extra.bench.length > 1) {
     const b0 = extra.bench[0].v;

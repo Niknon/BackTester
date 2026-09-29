@@ -1,4 +1,4 @@
-import { getAsset, roundToStep } from '../../data/assets';
+import { getAsset, roundToStep, spotQtyStep } from '../../data/assets';
 import type { Exchange } from '../exchange';
 import type { Execution, Order } from '../types';
 import type { BotLogic, BotState, FuturesGridParams, GridMode, SpotGridParams } from './types';
@@ -20,12 +20,25 @@ function emptyIndex(levels: number[], price: number) {
   return best;
 }
 
-function validateGrid(ex: Exchange, p: { symbol: string; lower: number; upper: number; grids: number }, feeRate: number): string | null {
+function validateGrid(
+  ex: Exchange,
+  p: { symbol: string; lower: number; upper: number; grids: number },
+  feeRate: number,
+  investment: number,
+  leverage: number,
+  minQty: number,
+): string | null {
   if (!ex.market.has(p.symbol)) return `Нет данных по ${p.symbol}`;
   if (!(p.lower > 0) || !(p.upper > p.lower)) return 'Верхняя граница должна быть больше нижней';
   if (!(p.grids >= 2 && p.grids <= 300)) return 'Число сеток: от 2 до 300';
   const stepPct = (p.upper / p.lower) ** (1 / p.grids) - 1;
   if (stepPct <= 2 * feeRate) return `Шаг сетки ${(stepPct * 100).toFixed(3)}% не покрывает комиссии (${(2 * feeRate * 100).toFixed(2)}%) — уменьшите число сеток`;
+  const mid = Math.sqrt(p.lower * p.upper);
+  const q = (investment * leverage * 0.9) / (p.grids * mid);
+  if (q < minQty) {
+    const need = Math.ceil((minQty * p.grids * mid) / (leverage * 0.9));
+    return `Слишком мало инвестиций на ${p.grids} сеток: объём уровня ${q.toPrecision(3)} < мин. ${minQty}. Нужно ≈${need} USDT или меньше сеток`;
+  }
   return null;
 }
 
@@ -133,9 +146,10 @@ function launchSpot(ex: Exchange, bot: BotState<'spotGrid'>) {
   });
   const fee = ex.config.fees.spotTaker;
   const cost = buys.reduce((s, i) => s + levels[i], 0) + sells.length * px;
-  const q = roundToStep((bot.investment / (cost * (1 + 2 * fee))) * 0.995, spec.qtyStep, 'floor');
-  if (!(q >= spec.minQty)) {
-    ex.stopBot(bot.id, `Недостаточно инвестиций: объём на сетку < ${spec.minQty}`);
+  const step = spotQtyStep(p.symbol);
+  const q = roundToStep((bot.investment / (cost * (1 + 2 * fee))) * 0.995, step, 'floor');
+  if (!(q >= step)) {
+    ex.stopBot(bot.id, `Недостаточно инвестиций: объём на сетку < ${step}`);
     return;
   }
   rt.levels = levels;
@@ -167,7 +181,7 @@ function launchSpot(ex: Exchange, bot: BotState<'spotGrid'>) {
 
 export const spotGridLogic: BotLogic<'spotGrid'> = {
   validate(ex, p: SpotGridParams, investment) {
-    const err = validateGrid(ex, p, ex.config.fees.spotMaker);
+    const err = validateGrid(ex, p, ex.config.fees.spotMaker, investment, 1, spotQtyStep(p.symbol));
     if (err) return err;
     if (investment < 10) return 'Минимальные инвестиции 10 USDT';
     return null;
@@ -255,7 +269,7 @@ function launchFutures(ex: Exchange, bot: BotState<'futuresGrid'>) {
 
 export const futuresGridLogic: BotLogic<'futuresGrid'> = {
   validate(ex, p: FuturesGridParams, investment) {
-    const err = validateGrid(ex, p, ex.config.fees.linearMaker);
+    const err = validateGrid(ex, p, ex.config.fees.linearMaker, investment, p.leverage, getAsset(p.symbol).minQty);
     if (err) return err;
     const max = getAsset(p.symbol).maxLeverage;
     if (!(p.leverage >= 1 && p.leverage <= max)) return `Плечо: от 1 до ${max}`;
