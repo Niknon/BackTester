@@ -6,6 +6,7 @@ import { useSession, useTick, toast } from '../../store/session';
 import { bump } from '../../store/session';
 import { fmtNum, fmtPct, fmtPrice, fmtQty, fmtUsd, pnlClass } from '../../lib/format';
 import { Check, cx, Modal, NumInput, PercentSlider, Row, Segmented, Select } from '../ui';
+import { Calculator } from './Calculator';
 
 type Tab = 'Limit' | 'Market' | 'Conditional';
 
@@ -121,6 +122,7 @@ export function OrderForm({ symbol, price: externalPrice }: { symbol: string; pr
   const [tif, setTif] = useState<TimeInForce>('GTC');
   const [levOpen, setLevOpen] = useState(false);
   const [modeOpen, setModeOpen] = useState(false);
+  const [calcOpen, setCalcOpen] = useState(false);
 
   useEffect(() => {
     setPrice(roundToStep(last, spec.tickSize));
@@ -198,12 +200,15 @@ export function OrderForm({ symbol, price: externalPrice }: { symbol: string; pr
   return (
     <div className="h-full flex flex-col bg-panel rounded-lg overflow-auto">
       <div className="p-3 flex flex-col gap-3">
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-[1fr_1fr_auto] gap-2">
           <button className="btn h-8" onClick={() => setModeOpen(true)}>
             {mode === 'cross' ? 'Кросс' : 'Изолир.'}
           </button>
           <button className="btn h-8 text-brand font-semibold" onClick={() => setLevOpen(true)}>
             {fmtNum(lev, lev % 1 ? 2 : 0)}x
+          </button>
+          <button className="btn h-8 w-8 p-0" title="Калькулятор PnL / цели / ликвидации" onClick={() => setCalcOpen(true)}>
+            🧮
           </button>
         </div>
         <div className="flex border-b border-line">
@@ -322,6 +327,7 @@ export function OrderForm({ symbol, price: externalPrice }: { symbol: string; pr
       <AccountBox />
       <LeverageModal symbol={symbol} open={levOpen} onClose={() => setLevOpen(false)} />
       <MarginModeModal symbol={symbol} open={modeOpen} onClose={() => setModeOpen(false)} />
+      {calcOpen && <Calculator symbol={symbol} open={calcOpen} onClose={() => setCalcOpen(false)} />}
     </div>
   );
 }

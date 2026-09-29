@@ -4,6 +4,7 @@ import { cx } from './ui';
 import { fmtUsd, pnlClass, fmtPct } from '../lib/format';
 
 const NAV: { page: Page; label: string }[] = [
+  { page: 'markets', label: 'Рынки' },
   { page: 'trade', label: 'Деривативы' },
   { page: 'spot', label: 'Спот' },
   { page: 'options', label: 'Опционы' },

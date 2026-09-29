@@ -11,6 +11,7 @@ import { BotsPage } from './pages/BotsPage';
 import { AssetsPage } from './pages/AssetsPage';
 import { AnalyticsPage } from './pages/AnalyticsPage';
 import { StrategyLabPage } from './pages/StrategyLabPage';
+import { MarketsPage } from './pages/MarketsPage';
 import { stepBars, stepCandle, togglePlay } from './store/actions';
 
 function useHotkeys() {
@@ -47,6 +48,8 @@ export function App() {
       <main className="flex-1 min-h-0 overflow-hidden">
         {showSetup ? (
           <SetupPage />
+        ) : page === 'markets' ? (
+          <MarketsPage />
         ) : page === 'trade' ? (
           <TradePage category="linear" />
         ) : page === 'spot' ? (

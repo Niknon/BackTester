@@ -163,7 +163,9 @@ function buildContext(ex: Exchange, symbol: string, agg: Ohlcv, tfMs: number, si
         // при развороте учитываем закрываемую позицию
         const closing = pos && Math.sign(pos.size) === (side === 'Buy' ? -1 : 1) ? Math.abs(pos.size) : 0;
         const avail = Math.max(0, ex.available(acc));
-        qty = (avail * pct * lev() * 0.97) / px + closing;
+        // та же формула стоимости, что и при проверке маржи биржей: IM + комиссии открытия/закрытия
+        const perUnit = px * (1 / lev() + 2 * ex.config.fees.linearTaker);
+        qty = (avail * pct * 0.995) / perUnit + closing;
       }
     }
     return { qty: roundToStep(qty, spec.qtyStep, 'floor'), opts };

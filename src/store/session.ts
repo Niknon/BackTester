@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import type { IntervalKey } from '../data/types';
 import type { Exchange } from '../engine/exchange';
 
-export type Page = 'setup' | 'trade' | 'spot' | 'options' | 'bots' | 'lab' | 'assets' | 'analytics';
+export type Page = 'setup' | 'markets' | 'trade' | 'spot' | 'options' | 'bots' | 'lab' | 'assets' | 'analytics';
 
 export interface Toast {
   id: number;
