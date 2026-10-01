@@ -3,16 +3,27 @@ chcp 65001 >nul
 title BackTester
 cd /d "%~dp0"
 
+rem Node.js может быть установлен, но не прописан в PATH — ищем в стандартных папках
+where node >nul 2>nul
+if errorlevel 1 (
+  for %%D in ("%ProgramFiles%\nodejs" "%ProgramFiles(x86)%\nodejs" "%LOCALAPPDATA%\Programs\nodejs" "%APPDATA%\nvm\current" "%NVM_SYMLINK%") do (
+    if exist "%%~D\node.exe" set "PATH=%%~D;%PATH%"
+  )
+)
+
 where node >nul 2>nul
 if errorlevel 1 (
   echo.
   echo [!] Не найден Node.js. Скачайте и установите его: https://nodejs.org  (кнопка LTS)
-  echo     После установки запустите этот файл ещё раз.
+  echo     Если Node.js уже установлен — перезагрузите компьютер и запустите этот файл ещё раз.
+echo     После установки запустите этот файл ещё раз.
   echo.
   start https://nodejs.org
   pause
   exit /b 1
 )
+
+for /f "delims=" %%V in ('node -v') do echo Найден Node.js %%V
 
 if not exist node_modules (
   echo Первый запуск: устанавливаю зависимости, это займёт 1-3 минуты...
