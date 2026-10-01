@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useResizable } from '../components/ui';
 import type { Category } from '../engine/types';
 import { useSession } from '../store/session';
 import { TickerBar } from '../components/trade/TickerBar';
@@ -7,34 +8,6 @@ import { OrderBook } from '../components/trade/OrderBook';
 import { OrderForm } from '../components/trade/OrderForm';
 import { SpotOrderForm } from '../components/trade/SpotOrderForm';
 import { TradeBottomPanel } from '../components/trade/BottomPanel';
-
-/** Вертикальный разделитель с перетаскиванием (высота нижней панели). */
-function useResizable(initial: number, min: number, max: number, key: string) {
-  const [h, setH] = useState<number>(() => Number(localStorage.getItem(key)) || initial);
-  const drag = useRef<{ y: number; h: number } | null>(null);
-  useEffect(() => {
-    const mv = (e: MouseEvent) => {
-      if (!drag.current) return;
-      const nh = Math.max(min, Math.min(max, drag.current.h - (e.clientY - drag.current.y)));
-      setH(nh);
-    };
-    const up = () => {
-      if (drag.current) localStorage.setItem(key, String(h));
-      drag.current = null;
-    };
-    window.addEventListener('mousemove', mv);
-    window.addEventListener('mouseup', up);
-    return () => {
-      window.removeEventListener('mousemove', mv);
-      window.removeEventListener('mouseup', up);
-    };
-  }, [h, min, max, key]);
-  const onDown = (e: React.MouseEvent) => {
-    drag.current = { y: e.clientY, h };
-    e.preventDefault();
-  };
-  return { h, onDown };
-}
 
 export function TradePage({ category }: { category: Category }) {
   const ex = useSession((s) => s.ex)!;

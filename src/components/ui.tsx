@@ -352,3 +352,34 @@ export function Dropdown({
     </div>
   );
 }
+
+/** Вертикальный разделитель с перетаскиванием (высота нижней панели). */
+/** invert: true — панель сверху (тянем вниз — растёт). */
+export function useResizable(initial: number, min: number, max: number, key: string, invert = false) {
+  const [h, setH] = useState<number>(() => Number(localStorage.getItem(key)) || initial);
+  const drag = useRef<{ y: number; h: number } | null>(null);
+  useEffect(() => {
+    const mv = (e: MouseEvent) => {
+      if (!drag.current) return;
+      const dy = e.clientY - drag.current.y;
+      const nh = Math.max(min, Math.min(max, drag.current.h + (invert ? dy : -dy)));
+      setH(nh);
+    };
+    const up = () => {
+      if (drag.current) localStorage.setItem(key, String(h));
+      drag.current = null;
+    };
+    window.addEventListener('mousemove', mv);
+    window.addEventListener('mouseup', up);
+    return () => {
+      window.removeEventListener('mousemove', mv);
+      window.removeEventListener('mouseup', up);
+    };
+  }, [h, min, max, key, invert]);
+  const onDown = (e: React.MouseEvent) => {
+    drag.current = { y: e.clientY, h };
+    e.preventDefault();
+  };
+  return { h, onDown };
+}
+

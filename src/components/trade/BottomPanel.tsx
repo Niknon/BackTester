@@ -1,12 +1,13 @@
 import { useState } from 'react';
 import { getAsset } from '../../data/assets';
+import { OptionPositions } from '../options/OptionPositions';
 import { MAIN } from '../../engine/exchange';
 import type { Category, Order, Position } from '../../engine/types';
 import { bump, toast, useSession, useTick } from '../../store/session';
 import { downloadText, fmtNum, fmtPct, fmtPrice, fmtQty, fmtTime, fmtUsd, pnlClass, toCsv } from '../../lib/format';
 import { Badge, Check, cx, Empty, Modal, NumInput, Row, Tabs } from '../ui';
 
-type TabKey = 'positions' | 'orders' | 'conditional' | 'history' | 'trades' | 'closed' | 'balances';
+type TabKey = 'positions' | 'options' | 'orders' | 'conditional' | 'history' | 'trades' | 'closed' | 'balances';
 
 const ORDER_STATUS: Record<string, string> = {
   New: 'Новый',
@@ -115,7 +116,7 @@ function MarginModal({ pos, open, onClose }: { pos: Position | null; open: boole
   );
 }
 
-function PositionsTable({ onSymbol, onlyCurrent, symbol }: { onSymbol: (s: string) => void; onlyCurrent: boolean; symbol: string }) {
+export function PositionsTable({ onSymbol, onlyCurrent, symbol }: { onSymbol: (s: string) => void; onlyCurrent: boolean; symbol: string }) {
   const ex = useSession((s) => s.ex)!;
   const acc = ex.main;
   const [tpslPos, setTpslPos] = useState<Position | null>(null);
@@ -323,6 +324,7 @@ export function TradeBottomPanel({ category, symbol, onSymbol }: { category: Cat
   const orders = active.filter((o) => o.status !== 'Untriggered');
   const cond = active.filter((o) => o.status === 'Untriggered');
   const positions = Object.values(acc.positions).filter((p) => p.category === 'linear');
+  const optCount = Object.values(acc.positions).filter((p) => p.category === 'option').length;
   const hist = ex.state.orderHistory.filter((o) => o.accountId === MAIN && flt(o)).slice(-300).reverse();
   const trades = ex.state.executions.filter((e) => e.accountId === MAIN && flt(e)).slice(-300).reverse();
   const closed = ex.state.closedPnl.filter((c) => c.accountId === MAIN && flt(c)).slice(-300).reverse();
@@ -337,6 +339,7 @@ export function TradeBottomPanel({ category, symbol, onSymbol }: { category: Cat
         ]
       : [
           { value: 'positions', label: `Позиции (${positions.length})` },
+          { value: 'options', label: `Опционы (${optCount})` },
           { value: 'orders', label: `Текущие ордера (${orders.length})` },
           { value: 'conditional', label: `Условные / TP-SL (${cond.length})` },
           { value: 'history', label: 'История ордеров' },
@@ -385,6 +388,7 @@ export function TradeBottomPanel({ category, symbol, onSymbol }: { category: Cat
       />
       <div className="flex-1 min-h-0 overflow-auto">
         {tab === 'positions' && <PositionsTable onSymbol={onSymbol} onlyCurrent={onlyCurrent} symbol={symbol} />}
+        {tab === 'options' && <OptionPositions base={onlyCurrent ? getAsset(symbol).base : undefined} />}
         {tab === 'orders' && <OrdersTable orders={orders} />}
         {tab === 'conditional' && <OrdersTable orders={cond} conditional />}
         {tab === 'balances' && <BalancesTable />}

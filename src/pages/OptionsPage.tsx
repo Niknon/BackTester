@@ -8,10 +8,13 @@ import type { Side } from '../engine/types';
 import { ensureSymbol } from '../store/actions';
 import { bump, toast, useSession, useTick } from '../store/session';
 import { fmtNum, fmtPct, fmtPrice, fmtShortDate, fmtTime, fmtUsd, pnlClass, autoDecimals } from '../lib/format';
-import { Badge, cx, Empty, NumInput, Row, Segmented, Tabs } from '../components/ui';
+import { Badge, cx, Empty, NumInput, Row, Segmented, Tabs, useResizable } from '../components/ui';
+import { PositionsTable } from '../components/trade/BottomPanel';
+import { LineStyle } from 'lightweight-charts';
 import { PayoffChart, breakevens, payoffAtExpiry, type PayoffLeg } from '../components/options/PayoffChart';
-import { PriceChart } from '../components/chart/PriceChart';
+import { PriceChart, type ExtraLine } from '../components/chart/PriceChart';
 import { XYChart } from '../components/options/VolCharts';
+import { OptionPositions, dte } from '../components/options/OptionPositions';
 
 const BASES = ASSETS.filter((a) => a.hasOptions);
 
@@ -61,10 +64,6 @@ const PRESETS: { key: string; label: string; legs: (atm: number, step: number) =
   { key: 'rr', label: 'Риск-реверсал', legs: (k, s) => [{ side: 'Buy', type: 'C', strike: k + 2 * s }, { side: 'Sell', type: 'P', strike: k - 2 * s }] },
 ];
 
-function dte(expiry: number, now: number) {
-  const d = (expiry - now) / DAY;
-  return d >= 1 ? `${d.toFixed(d >= 10 ? 0 : 1)}д` : `${((expiry - now) / 3_600_000).toFixed(1)}ч`;
-}
 
 export function OptionsPage() {
   useTick();
@@ -78,9 +77,12 @@ export function OptionsPage() {
   const expiries = loaded ? ex.optionExpiries(base) : [];
   const [expiry, setExpiry] = useState<number>(0);
   const [draft, setDraft] = useState<Draft | null>(null);
-  const [bottom, setBottom] = useState<'positions' | 'orders' | 'builder' | 'history' | 'chart' | 'vol'>('positions');
+  const [bottom, setBottom] = useState<'positions' | 'orders' | 'builder' | 'history' | 'perps' | 'vol'>('positions');
   const [builder, setBuilder] = useState<BuilderLeg[]>([]);
   const [greekCols, setGreekCols] = useState(false);
+  const [view, setView] = useState<'chain' | 'split' | 'chart'>(() => (localStorage.getItem('bt-opt-view') as any) || 'split');
+  const bottomRes = useResizable(240, 120, 650, 'bt-opt-bottom-h');
+  const splitRes = useResizable(240, 120, 700, 'bt-opt-chart-h', true);
 
   useEffect(() => {
     if (!expiries.includes(expiry) && expiries.length) setExpiry(expiries[Math.min(3, expiries.length - 1)]);
@@ -151,9 +153,36 @@ export function OptionsPage() {
     { delta: perpPos?.size ?? 0, gamma: 0, vega: 0, theta: 0 },
   );
 
+  // линии на графике: страйки позиций, безубыточность портфеля, выбранный в цепочке опцион
+  const chartLines: ExtraLine[] = [];
+  for (const p of optPositions) {
+    const inst = ex.optionInstrument(p.symbol)!;
+    chartLines.push({
+      id: 'k' + p.symbol,
+      price: inst.strike,
+      color: inst.type === 'C' ? '#20b26c' : '#ef454a',
+      title: `${p.size > 0 ? 'Лонг' : 'Шорт'} ${inst.type === 'C' ? 'колл' : 'пут'} ${fmtNum(p.size, 3)} · ${dte(inst.expiry, ex.now)}`,
+      style: LineStyle.Dashed,
+    });
+  }
+  if (legs.length && Number.isFinite(S))
+    breakevens(legs, S * 0.3, S * 1.7).forEach((b, i) =>
+      chartLines.push({ id: 'be' + i, price: b, color: '#f7a600', title: 'Безубыточность', style: LineStyle.Dotted }),
+    );
+  if (draft) {
+    const di = ex.optionInstrument(draft.symbol);
+    const dq = ex.optionQuote(draft.symbol);
+    if (di && dq) {
+      chartLines.push({ id: 'draftK', price: di.strike, color: '#a78bfa', title: `Выбран: ${di.type === 'C' ? 'колл' : 'пут'} ${fmtNum(di.strike, autoDecimals(di.strike))}`, style: LineStyle.Solid });
+      const prem = draft.side === 'Buy' ? dq.ask : dq.bid;
+      chartLines.push({ id: 'draftBe', price: di.type === 'C' ? di.strike + prem : di.strike - prem, color: '#a78bfa', title: 'Безубыт. ордера', style: LineStyle.Dotted });
+    }
+  }
+
   const optOrders = ex.activeOrders(MAIN).filter((o) => o.category === 'option');
   const optHistory = ex.state.closedPnl.filter((c) => c.accountId === MAIN && c.category === 'option').slice(-200).reverse();
   const strikeDec = autoDecimals(S);
+  const perpCount = Object.values(ex.main.positions).filter((p) => p.category === 'linear').length;
 
   return (
     <div className="h-full flex flex-col gap-1 p-1">
@@ -182,17 +211,33 @@ export function OptionsPage() {
         </div>
       </div>
       <div className="flex-1 min-h-0 flex gap-1">
-        <div className="flex-1 min-w-0 bg-panel rounded-lg overflow-auto">
-          <ChainTable chain={chain} S={S} base={base} greekCols={greekCols} onPick={setDraft} draft={draft} strikeDec={strikeDec} />
+        <div className="flex-1 min-w-0 flex flex-col gap-1">
+          {view !== 'chain' && (
+            <div className="min-h-0 shrink-0" style={view === 'chart' ? { flex: 1 } : { height: splitRes.h }}>
+              <PriceChart symbol={underlying} tf={chartTf} onTfChange={(t) => set({ chartTf: t })} category="option" extraLines={chartLines} />
+            </div>
+          )}
+          {view === 'split' && <div className="h-1 cursor-row-resize hover:bg-brand/40 rounded shrink-0" onMouseDown={splitRes.onDown} />}
+          {view !== 'chart' && (
+            <div className="flex-1 min-h-0 bg-panel rounded-lg overflow-auto">
+              <ChainTable chain={chain} S={S} base={base} greekCols={greekCols} onPick={setDraft} draft={draft} strikeDec={strikeDec} />
+            </div>
+          )}
         </div>
-        <div className="w-[320px] shrink-0 bg-panel rounded-lg overflow-auto">
-          <OptionOrderPanel draft={draft} onSide={(side) => draft && setDraft({ ...draft, side })} onAddToBuilder={(leg) => {
-            setBuilder((b) => [...b, { ...leg, id: Date.now() }]);
-            setBottom('builder');
-          }} />
+        <div className="w-[340px] shrink-0 bg-panel rounded-lg overflow-auto">
+          <OptionOrderPanel
+            draft={draft}
+            portfolio={legs}
+            onSide={(side) => draft && setDraft({ ...draft, side })}
+            onAddToBuilder={(leg) => {
+              setBuilder((b) => [...b, { ...leg, id: Date.now() }]);
+              setBottom('builder');
+            }}
+          />
         </div>
       </div>
-      <div className="h-[330px] shrink-0 bg-panel rounded-lg flex flex-col overflow-hidden">
+      <div className="h-1 cursor-row-resize hover:bg-brand/40 rounded shrink-0" onMouseDown={bottomRes.onDown} />
+      <div className="shrink-0 bg-panel rounded-lg flex flex-col overflow-hidden" style={{ height: bottomRes.h }}>
         <Tabs
           value={bottom}
           onChange={setBottom}
@@ -200,16 +245,31 @@ export function OptionsPage() {
             { value: 'positions', label: `Позиции и профиль (${optPositions.length})` },
             { value: 'orders', label: `Ордера (${optOrders.length})` },
             { value: 'builder', label: `Конструктор стратегий${builder.length ? ` (${builder.length})` : ''}` },
+            { value: 'perps', label: `Фьючерсы (${perpCount})` },
             { value: 'history', label: 'История' },
             { value: 'vol', label: 'Улыбка и структура IV' },
-            { value: 'chart', label: `График ${underlying}` },
           ]}
+          right={
+            <Segmented
+              size="sm"
+              value={view}
+              onChange={(v) => {
+                setView(v);
+                localStorage.setItem('bt-opt-view', v);
+              }}
+              options={[
+                { value: 'chain', label: 'Цепочка' },
+                { value: 'split', label: 'Цепочка + график' },
+                { value: 'chart', label: 'График' },
+              ]}
+            />
+          }
         />
         <div className="flex-1 min-h-0 overflow-auto">
           {bottom === 'positions' && (
             <div className="grid grid-cols-[1fr_460px] h-full">
               <div className="overflow-auto">
-                <OptionPositions />
+                <OptionPositions base={base} />
               </div>
               <div className="border-l border-line p-2">
                 {legs.length ? <PayoffSummary legs={legs} S={S} /> : <Empty>Откройте опционную позицию, чтобы увидеть профиль выплат</Empty>}
@@ -264,11 +324,7 @@ export function OptionsPage() {
               <Empty>История пуста</Empty>
             ))}
           {bottom === 'vol' && chain && <VolPanel chain={chain} base={base} expiries={expiries} />}
-          {bottom === 'chart' && (
-            <div className="h-full p-1">
-              <PriceChart symbol={underlying} tf={chartTf} onTfChange={(t) => set({ chartTf: t })} compact />
-            </div>
-          )}
+          {bottom === 'perps' && <PositionsTable onSymbol={(sym) => set({ page: 'trade', symbol: sym })} onlyCurrent={false} symbol={underlying} />}
         </div>
       </div>
     </div>
@@ -464,12 +520,23 @@ function ChainTable({
   );
 }
 
-function OptionOrderPanel({ draft, onSide, onAddToBuilder }: { draft: Draft | null; onSide: (s: Side) => void; onAddToBuilder: (l: Omit<BuilderLeg, 'id'>) => void }) {
+function OptionOrderPanel({
+  draft,
+  portfolio,
+  onSide,
+  onAddToBuilder,
+}: {
+  draft: Draft | null;
+  portfolio: PayoffLeg[];
+  onSide: (s: Side) => void;
+  onAddToBuilder: (l: Omit<BuilderLeg, 'id'>) => void;
+}) {
   useTick();
   const ex = useSession((s) => s.ex)!;
   const [type, setType] = useState<'Limit' | 'Market'>('Limit');
   const [price, setPrice] = useState<number | ''>('');
   const [qty, setQty] = useState<number | ''>('');
+  const [withPortfolio, setWithPortfolio] = useState(false);
   const q = draft ? ex.optionQuote(draft.symbol) : null;
   useEffect(() => {
     if (q && draft) setPrice(draft.side === 'Buy' ? q.ask : q.bid);
@@ -549,6 +616,24 @@ function OptionOrderPanel({ draft, onSide, onAddToBuilder }: { draft: Draft | nu
         <Row label="Безубыточность" value={fmtNum(be, autoDecimals(be))} />
         <Row label="IV / мин. шаг" value={`${(q.iv * 100).toFixed(1)}% / ${step}`} />
       </div>
+      <OrderPreview
+        leg={{
+          type: inst.type,
+          strike: inst.strike,
+          qty: (draft.side === 'Buy' ? 1 : -1) * n,
+          // премия + комиссия на контракт: для лонга дороже, для шорта меньше получаем
+          entry: n > 0 ? px + ((draft.side === 'Buy' ? 1 : -1) * fee) / n : px,
+          valueNow: (x: number) => ex.optionQuote(draft.symbol, x)?.mark ?? 0,
+        }}
+        portfolio={withPortfolio ? portfolio : []}
+        S={S}
+      />
+      {portfolio.length > 0 && (
+        <label className="flex items-center gap-2 text-[11px] text-muted -mt-1">
+          <input type="checkbox" className="checkbox" checked={withPortfolio} onChange={(e) => setWithPortfolio(e.target.checked)} />
+          Учитывать открытые позиции по {inst.base}
+        </label>
+      )}
       <div className="grid grid-cols-4 gap-1 text-center text-[10px]">
         {[
           ['Δ', g.delta, 3],
@@ -572,59 +657,6 @@ function OptionOrderPanel({ draft, onSide, onAddToBuilder }: { draft: Draft | nu
   );
 }
 
-function OptionPositions() {
-  const ex = useSession((s) => s.ex)!;
-  const ps = Object.values(ex.main.positions).filter((p) => p.category === 'option');
-  if (!ps.length) return <Empty>Нет опционных позиций</Empty>;
-  return (
-    <table className="tbl">
-      <thead>
-        <tr>
-          <th>Инструмент</th>
-          <th className="text-right">Кол-во</th>
-          <th className="text-right">Цена входа</th>
-          <th className="text-right">Mark</th>
-          <th className="text-right">IV</th>
-          <th className="text-right">Стоимость</th>
-          <th className="text-right">Нереализ. PnL</th>
-          <th className="text-right">Δ</th>
-          <th className="text-right">Θ/день</th>
-          <th className="text-right">До эксп.</th>
-          <th />
-        </tr>
-      </thead>
-      <tbody>
-        {ps.map((p) => {
-          const q = ex.optionQuote(p.symbol);
-          const inst = ex.optionInstrument(p.symbol)!;
-          const upnl = q ? p.size * (q.mark - p.avgPrice) : 0;
-          return (
-            <tr key={p.symbol}>
-              <td>
-                <span className="font-semibold">{p.symbol}</span>
-                <div className="text-[10px] text-muted">{p.size > 0 ? 'Лонг' : 'Шорт'}</div>
-              </td>
-              <td className={cx('text-right', p.size > 0 ? 'text-up' : 'text-down')}>{fmtNum(p.size, 3)}</td>
-              <td className="text-right">{fmtNum(p.avgPrice, 4)}</td>
-              <td className="text-right">{fmtNum(q?.mark, 4)}</td>
-              <td className="text-right">{q ? (q.iv * 100).toFixed(1) + '%' : '—'}</td>
-              <td className="text-right">{fmtUsd((q?.mark ?? 0) * p.size)}</td>
-              <td className={cx('text-right', pnlClass(upnl))}>{fmtUsd(upnl, 2, true)}</td>
-              <td className="text-right">{fmtNum((q?.greeks.delta ?? 0) * p.size, 3)}</td>
-              <td className={cx('text-right', pnlClass((q?.greeks.theta ?? 0) * p.size))}>{fmtNum((q?.greeks.theta ?? 0) * p.size, 2)}</td>
-              <td className="text-right text-muted">{dte(inst.expiry, ex.now)}</td>
-              <td>
-                <button className="btn btn-sm" onClick={() => (ex.closePosition(MAIN, p.symbol), bump(true))}>
-                  Закрыть
-                </button>
-              </td>
-            </tr>
-          );
-        })}
-      </tbody>
-    </table>
-  );
-}
 
 function OptionOrders() {
   const ex = useSession((s) => s.ex)!;
@@ -661,6 +693,65 @@ function OptionOrders() {
         ))}
       </tbody>
     </table>
+  );
+}
+
+/** Расчёт PnL ордера ДО открытия: профиль выплат, макс. прибыль/убыток, сценарии. */
+function OrderPreview({ leg, portfolio, S }: { leg: PayoffLeg; portfolio: PayoffLeg[]; S: number }) {
+  const legs = useMemo(() => [...portfolio, leg], [portfolio, leg.type, leg.strike, leg.qty, leg.entry, S]);
+  if (!leg.qty || !Number.isFinite(S)) return null;
+  const f = (x: number) => payoffAtExpiry(legs, x);
+  // неограниченность: наклон далеко справа; слева цена ограничена нулём
+  const slopeUp = f(S * 4) - f(S * 3);
+  const vals: number[] = [];
+  for (let i = 0; i <= 400; i++) vals.push(f(S * 0.001 + ((S * 3 - S * 0.001) * i) / 400));
+  const maxP = slopeUp > 1e-9 ? Infinity : Math.max(...vals);
+  const maxL = slopeUp < -1e-9 ? -Infinity : Math.min(...vals);
+  const bes = breakevens(legs, S * 0.01, S * 3, 1200);
+  const d = autoDecimals(S);
+  const scen = [-0.2, -0.1, -0.05, 0, 0.05, 0.1, 0.2];
+  const nowPnl = (x: number) => {
+    let v = 0;
+    for (const l of legs) v += l.type === 'F' ? l.qty * (x - l.entry) : l.qty * ((l.valueNow ? l.valueNow(x) : 0) - l.entry);
+    return v;
+  };
+  const fmtBound = (v: number) => (v === Infinity ? 'не ограничена' : v === -Infinity ? 'не ограничен' : fmtUsd(v, 2, true));
+  return (
+    <div className="flex flex-col gap-2 border border-line rounded-md p-2">
+      <div className="text-[11px] font-semibold">PnL до открытия {portfolio.length ? '(с портфелем)' : ''}</div>
+      <PayoffChart legs={legs} spot={S} height={170} range={0.25} />
+      <div className="grid grid-cols-2 gap-x-3 text-[11px]">
+        <Row label="Макс. прибыль" value={<span className="text-up">{fmtBound(maxP)}</span>} />
+        <Row label="Макс. убыток" value={<span className="text-down">{fmtBound(maxL)}</span>} />
+      </div>
+      <Row label="Безубыточность" value={bes.length ? bes.map((b) => fmtNum(b, d)).join(' / ') : '—'} />
+      <table className="w-full text-[10.5px] num">
+        <thead>
+          <tr className="text-muted">
+            <td>Цена базы</td>
+            <td className="text-right">Сейчас (T+0)</td>
+            <td className="text-right">На экспирации</td>
+          </tr>
+        </thead>
+        <tbody>
+          {scen.map((k) => {
+            const x = S * (1 + k);
+            const a = nowPnl(x);
+            const b = f(x);
+            return (
+              <tr key={k} className={k === 0 ? 'bg-panel2' : ''}>
+                <td className="py-0.5">
+                  {k === 0 ? 'текущая' : `${k > 0 ? '+' : ''}${(k * 100).toFixed(0)}%`} <span className="text-dim">{fmtNum(x, d)}</span>
+                </td>
+                <td className={cx('text-right', pnlClass(a))}>{fmtUsd(a, 2, true)}</td>
+                <td className={cx('text-right', pnlClass(b))}>{fmtUsd(b, 2, true)}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <div className="text-[10px] text-dim">С учётом комиссии. «Сейчас» — мгновенное изменение цены при текущей IV.</div>
+    </div>
   );
 }
 
