@@ -5,9 +5,11 @@ import { MAIN } from '../../engine/exchange';
 import type { Category, Order, Position } from '../../engine/types';
 import { bump, toast, useSession, useTick } from '../../store/session';
 import { downloadText, fmtNum, fmtPct, fmtPrice, fmtQty, fmtTime, fmtUsd, pnlClass, toCsv } from '../../lib/format';
-import { Badge, Check, cx, Empty, Modal, NumInput, Row, Tabs } from '../ui';
+import { Badge, Check, cx, Empty, Modal, NumInput, Row, Tabs, usePersistent } from '../ui';
+import { AllPositions, positionsCount } from '../positions/AllPositions';
 
-type TabKey = 'positions' | 'options' | 'orders' | 'conditional' | 'history' | 'trades' | 'closed' | 'balances';
+type TabKey = 'all' | 'positions' | 'options' | 'orders' | 'conditional' | 'history' | 'trades' | 'closed' | 'balances';
+const TAB_KEYS: readonly TabKey[] = ['all', 'positions', 'options', 'orders', 'conditional', 'history', 'trades', 'closed', 'balances'];
 
 const ORDER_STATUS: Record<string, string> = {
   New: 'Новый',
@@ -316,7 +318,8 @@ function OrdersTable({ orders, conditional }: { orders: Order[]; conditional?: b
 export function TradeBottomPanel({ category, symbol, onSymbol }: { category: Category; symbol: string; onSymbol: (s: string) => void }) {
   useTick();
   const ex = useSession((s) => s.ex)!;
-  const [tab, setTab] = useState<TabKey>(category === 'spot' ? 'balances' : 'positions');
+  // последняя открытая вкладка запоминается отдельно для деривативов и спота
+  const [tab, setTab] = usePersistent<TabKey>(`bt-bottom-tab-${category}`, category === 'spot' ? 'balances' : 'all', TAB_KEYS);
   const [onlyCurrent, setOnlyCurrent] = useState(false);
   const acc = ex.main;
   const flt = (o: { symbol: string; category: string }) => o.category === category && (!onlyCurrent || o.symbol === symbol);
@@ -325,12 +328,14 @@ export function TradeBottomPanel({ category, symbol, onSymbol }: { category: Cat
   const cond = active.filter((o) => o.status === 'Untriggered');
   const positions = Object.values(acc.positions).filter((p) => p.category === 'linear');
   const optCount = Object.values(acc.positions).filter((p) => p.category === 'option').length;
+  const allCount = positionsCount(ex);
   const hist = ex.state.orderHistory.filter((o) => o.accountId === MAIN && flt(o)).slice(-300).reverse();
   const trades = ex.state.executions.filter((e) => e.accountId === MAIN && flt(e)).slice(-300).reverse();
   const closed = ex.state.closedPnl.filter((c) => c.accountId === MAIN && flt(c)).slice(-300).reverse();
   const tabs: { value: TabKey; label: string }[] =
     category === 'spot'
       ? [
+          { value: 'all', label: `Все позиции (${allCount})` },
           { value: 'balances', label: 'Балансы' },
           { value: 'orders', label: `Открытые ордера (${orders.length})` },
           { value: 'conditional', label: `Условные (${cond.length})` },
@@ -338,6 +343,7 @@ export function TradeBottomPanel({ category, symbol, onSymbol }: { category: Cat
           { value: 'trades', label: 'История сделок' },
         ]
       : [
+          { value: 'all', label: `Все позиции (${allCount})` },
           { value: 'positions', label: `Позиции (${positions.length})` },
           { value: 'options', label: `Опционы (${optCount})` },
           { value: 'orders', label: `Текущие ордера (${orders.length})` },
@@ -354,9 +360,11 @@ export function TradeBottomPanel({ category, symbol, onSymbol }: { category: Cat
         tabs={tabs}
         right={
           <>
-            <Check checked={onlyCurrent} onChange={setOnlyCurrent}>
-              <span className="text-muted text-[11px]">Только {symbol}</span>
-            </Check>
+            {tab !== 'all' && (
+              <Check checked={onlyCurrent} onChange={setOnlyCurrent}>
+                <span className="text-muted text-[11px]">Только {symbol}</span>
+              </Check>
+            )}
             {tab === 'positions' && positions.length > 0 && (
               <button className="btn btn-sm btn-ghost" onClick={() => (ex.closeAllPositions(MAIN), bump(true))}>
                 Закрыть все
@@ -387,6 +395,7 @@ export function TradeBottomPanel({ category, symbol, onSymbol }: { category: Cat
         }
       />
       <div className="flex-1 min-h-0 overflow-auto">
+        {tab === 'all' && <AllPositions />}
         {tab === 'positions' && <PositionsTable onSymbol={onSymbol} onlyCurrent={onlyCurrent} symbol={symbol} />}
         {tab === 'options' && <OptionPositions base={onlyCurrent ? getAsset(symbol).base : undefined} />}
         {tab === 'orders' && <OrdersTable orders={orders} />}

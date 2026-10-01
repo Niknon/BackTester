@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
-import { getAsset, maintenanceMarginRate, roundToStep } from '../../data/assets';
+import { ASSETS, getAsset, maintenanceMarginRate, roundToStep } from '../../data/assets';
+import { ensureSymbol } from '../../store/actions';
 import { MAIN } from '../../engine/exchange';
 import type { MarginMode, Side, TimeInForce } from '../../engine/types';
 import { useSession, useTick, toast } from '../../store/session';
 import { bump } from '../../store/session';
 import { fmtNum, fmtPct, fmtPrice, fmtQty, fmtUsd, pnlClass } from '../../lib/format';
-import { Check, cx, Modal, NumInput, PercentSlider, Row, Segmented, Select } from '../ui';
+import { Check, cx, Modal, NumInput, PercentSlider, Row, Segmented, Select, usePersistent } from '../ui';
 import { Calculator } from './Calculator';
 
 type Tab = 'Limit' | 'Market' | 'Conditional';
@@ -102,24 +103,65 @@ function MarginModeModal({ symbol, open, onClose }: { symbol: string; open: bool
   );
 }
 
-export function OrderForm({ symbol, price: externalPrice }: { symbol: string; price?: { p: number; n: number } }) {
+type FormProps = { symbol: string; price?: { p: number; n: number } };
+
+export function OrderForm(props: FormProps) {
+  if (getAsset(props.symbol).spotOnly) return <SpotOnlyNotice symbol={props.symbol} />;
+  return <PerpOrderForm {...props} />;
+}
+
+/** xStocks и токены золота не имеют перпетуалов — предлагаем спот. */
+function SpotOnlyNotice({ symbol }: { symbol: string }) {
+  const set = useSession((s) => s.set);
+  const spec = getAsset(symbol);
+  const perp = spec.underlying ? ASSETS.find((a) => a.symbol === `${spec.underlying}USDT` && !a.spotOnly) : undefined;
+  return (
+    <div className="h-full flex flex-col bg-panel rounded-lg p-4 gap-3">
+      <div className="text-[15px] font-semibold">{spec.base} — только спот</div>
+      <div className="text-muted text-[12px] leading-relaxed">
+        {spec.group === 'xstock'
+          ? `${spec.name} (${spec.base}) — токенизированная акция xStocks. На Bybit такие токены торгуются на споте за USDT круглосуточно, без плеча и funding.`
+          : `${spec.name} торгуется на споте за USDT, без плеча и funding.`}
+      </div>
+      <button className="btn btn-brand h-10" onClick={() => set({ page: 'spot', symbol })}>
+        Торговать {spec.base} на споте →
+      </button>
+      {perp && (
+        <button
+          className="btn h-9"
+          onClick={async () => {
+            if (await ensureSymbol(perp.symbol)) set({ symbol: perp.symbol });
+          }}
+        >
+          Открыть перпетуал {perp.symbol} (с плечом до {perp.maxLeverage}x)
+        </button>
+      )}
+      <div className="text-[11px] text-dim">Для торговли с плечом выберите USDT-перпетуал в списке символов слева вверху.</div>
+    </div>
+  );
+}
+
+const PERP_TABS: readonly Tab[] = ['Limit', 'Market', 'Conditional'];
+
+function PerpOrderForm({ symbol, price: externalPrice }: FormProps) {
   useTick();
   const ex = useSession((s) => s.ex)!;
   const acc = ex.main;
   const spec = getAsset(symbol);
   const last = ex.price(symbol);
-  const [tab, setTab] = useState<Tab>('Limit');
+  // тип ордера и единицы запоминаются между сессиями
+  const [tab, setTab, setTabTemp] = usePersistent<Tab>('bt-form-perp-tab', 'Limit', PERP_TABS);
   const [price, setPrice] = useState<number | ''>('');
   const [trigger, setTrigger] = useState<number | ''>('');
-  const [condType, setCondType] = useState<'Market' | 'Limit'>('Market');
+  const [condType, setCondType] = usePersistent<'Market' | 'Limit'>('bt-form-perp-cond', 'Market', ['Market', 'Limit']);
   const [qty, setQty] = useState<number | ''>('');
-  const [unit, setUnit] = useState<'coin' | 'usdt'>('coin');
+  const [unit, setUnit] = usePersistent<'coin' | 'usdt'>('bt-form-perp-unit', 'coin', ['coin', 'usdt']);
   const [pct, setPct] = useState(0);
   const [tpsl, setTpsl] = useState(false);
   const [tp, setTp] = useState<number | ''>('');
   const [sl, setSl] = useState<number | ''>('');
   const [reduceOnly, setReduceOnly] = useState(false);
-  const [tif, setTif] = useState<TimeInForce>('GTC');
+  const [tif, setTif] = usePersistent<TimeInForce>('bt-form-perp-tif', 'GTC', ['GTC', 'PostOnly', 'IOC', 'FOK']);
   const [levOpen, setLevOpen] = useState(false);
   const [modeOpen, setModeOpen] = useState(false);
   const [calcOpen, setCalcOpen] = useState(false);
@@ -136,7 +178,8 @@ export function OrderForm({ symbol, price: externalPrice }: { symbol: string; pr
   useEffect(() => {
     if (externalPrice) {
       setPrice(externalPrice.p);
-      if (tab === 'Market') setTab('Limit');
+      // клик по цене на графике/стакане — лимит, но сохранённый выбор не меняем
+      if (tab === 'Market') setTabTemp('Limit');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [externalPrice?.n]);
@@ -193,6 +236,19 @@ export function OrderForm({ symbol, price: externalPrice }: { symbol: string; pr
     }
     if (o.status === 'New' || o.status === 'Untriggered') toast('info', `Ордер размещён: ${side === 'Buy' ? 'Лонг' : 'Шорт'} ${fmtQty(o.qty, symbol)} ${symbol}`, tab === 'Conditional' ? `Срабатывание ${fmtPrice(o.triggerPrice, symbol)}` : `Цена ${fmtPrice(o.price, symbol)}`);
     bump(true);
+  };
+
+  /** оценка цены ликвидации новой позиции (до открытия) */
+  const estLiq = (side: Side) => {
+    if (!qtyCoin || reduceOnly || (pos && pos.size !== 0)) return NaN;
+    const mmr = maintenanceMarginRate(symbol);
+    const im = (qtyCoin * refPx) / lev;
+    const mm = qtyCoin * refPx * mmr;
+    // кросс: в залог идёт и остаток доступного баланса
+    const extra = mode === 'cross' ? Math.max(0, avail - costFor(side)) : 0;
+    const dist = (im - mm + extra) / qtyCoin;
+    const lp = side === 'Buy' ? refPx - dist : refPx + dist;
+    return lp > 0 ? lp : NaN;
   };
 
   const roi = (target: number | '', side: 1 | -1) => (target && refPx ? ((Number(target) - refPx) / refPx) * lev * side : NaN);
@@ -317,10 +373,12 @@ export function OrderForm({ symbol, price: externalPrice }: { symbol: string; pr
           <div>
             <div>Стоимость {fmtUsd(costFor('Buy'))}</div>
             <div>Макс. {fmtQty(maxOpen + (pos && pos.size < 0 ? Math.abs(pos.size) : 0), symbol)}</div>
+            {Number.isFinite(estLiq('Buy')) && <div title="Оценка до открытия; для кросс-маржи учитывает доступный баланс">Ликв. ≈ <span className="text-brand">{fmtPrice(estLiq('Buy'), symbol)}</span></div>}
           </div>
           <div className="text-right">
             <div>Стоимость {fmtUsd(costFor('Sell'))}</div>
             <div>Макс. {fmtQty(maxOpen + (pos && pos.size > 0 ? pos.size : 0), symbol)}</div>
+            {Number.isFinite(estLiq('Sell')) && <div title="Оценка до открытия; для кросс-маржи учитывает доступный баланс">Ликв. ≈ <span className="text-brand">{fmtPrice(estLiq('Sell'), symbol)}</span></div>}
           </div>
         </div>
       </div>

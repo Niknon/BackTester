@@ -20,9 +20,27 @@ function emptyIndex(levels: number[], price: number) {
   return best;
 }
 
+/**
+ * Объём на уровень при запуске (худший случай: «пустым» окажется самый дешёвый уровень,
+ * а ордера стоят на всех остальных). Та же формула, что и при запуске бота.
+ */
+function perLevelQty(levels: number[], investment: number, leverage: number) {
+  const denom = levels.reduce((a, b) => a + b, 0) - levels[0];
+  return { q: (investment * leverage * 0.9) / denom, denom };
+}
+
+/** Максимальное число сеток, при котором объём уровня не меньше минимального лота. */
+export function maxFeasibleGrids(symbol: string, lower: number, upper: number, mode: GridMode, investment: number, leverage: number, minQty: number) {
+  if (!(lower > 0) || !(upper > lower) || !(minQty > 0) || !(investment > 0)) return 0;
+  const tick = getAsset(symbol).tickSize;
+  let n = Math.min(300, Math.floor((investment * leverage * 0.9) / (((lower + upper) / 2) * minQty)) + 1);
+  while (n >= 2 && perLevelQty(gridLevels(lower, upper, n, mode, tick), investment, leverage).q < minQty) n--;
+  return Math.max(0, n);
+}
+
 function validateGrid(
   ex: Exchange,
-  p: { symbol: string; lower: number; upper: number; grids: number },
+  p: { symbol: string; lower: number; upper: number; grids: number; mode: GridMode },
   feeRate: number,
   investment: number,
   leverage: number,
@@ -33,11 +51,11 @@ function validateGrid(
   if (!(p.grids >= 2 && p.grids <= 300)) return 'Число сеток: от 2 до 300';
   const stepPct = (p.upper / p.lower) ** (1 / p.grids) - 1;
   if (stepPct <= 2 * feeRate) return `Шаг сетки ${(stepPct * 100).toFixed(3)}% не покрывает комиссии (${(2 * feeRate * 100).toFixed(2)}%) — уменьшите число сеток`;
-  const mid = Math.sqrt(p.lower * p.upper);
-  const q = (investment * leverage * 0.9) / (p.grids * mid);
+  const { q, denom } = perLevelQty(gridLevels(p.lower, p.upper, p.grids, p.mode, getAsset(p.symbol).tickSize), investment, leverage);
   if (q < minQty) {
-    const need = Math.ceil((minQty * p.grids * mid) / (leverage * 0.9));
-    return `Слишком мало инвестиций на ${p.grids} сеток: объём уровня ${q.toPrecision(3)} < мин. ${minQty}. Нужно ≈${need} USDT или меньше сеток`;
+    const need = Math.ceil((minQty * denom) / (leverage * 0.9));
+    const maxN = maxFeasibleGrids(p.symbol, p.lower, p.upper, p.mode, investment, leverage, minQty);
+    return `Слишком мало инвестиций на ${p.grids} сеток: объём уровня ${q.toPrecision(3)} < мин. ${minQty}. Нужно ≈${need} USDT${maxN >= 2 ? ` или не больше ${maxN} сеток` : ''}`;
   }
   return null;
 }
@@ -269,6 +287,7 @@ function launchFutures(ex: Exchange, bot: BotState<'futuresGrid'>) {
 
 export const futuresGridLogic: BotLogic<'futuresGrid'> = {
   validate(ex, p: FuturesGridParams, investment) {
+    if (getAsset(p.symbol).spotOnly) return `${p.symbol} торгуется только на споте — используйте спотовый грид`;
     const err = validateGrid(ex, p, ex.config.fees.linearMaker, investment, p.leverage, getAsset(p.symbol).minQty);
     if (err) return err;
     const max = getAsset(p.symbol).maxLeverage;

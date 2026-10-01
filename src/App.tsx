@@ -13,6 +13,7 @@ import { AnalyticsPage } from './pages/AnalyticsPage';
 import { StrategyLabPage } from './pages/StrategyLabPage';
 import { MarketsPage } from './pages/MarketsPage';
 import { stepBars, stepCandle, togglePlay } from './store/actions';
+import { PositionsDrawer } from './components/positions/AllPositions';
 
 function useHotkeys() {
   useEffect(() => {
@@ -20,6 +21,14 @@ function useHotkeys() {
       const t = e.target as HTMLElement;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
       if (!useSession.getState().ex) return;
+      if (e.code === 'Escape' && useSession.getState().positionsOpen) {
+        useSession.setState({ positionsOpen: false });
+        return;
+      }
+      if (e.code === 'KeyP' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        useSession.setState((s) => ({ positionsOpen: !s.positionsOpen }));
+        return;
+      }
       if (e.code === 'Space') {
         e.preventDefault();
         // не «нажимать» повторно кнопку, на которой остался фокус (например, «Купить»)
@@ -68,6 +77,7 @@ export function App() {
           <StrategyLabPage />
         ) : null}
       </main>
+      <PositionsDrawer />
       <LoadingOverlay />
       <Toasts />
     </div>

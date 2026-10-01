@@ -268,7 +268,19 @@ export interface PlaceOrderRequest {
   quoteQty?: number;
 }
 
+/** Ценовой алерт: при касании цены симуляция ставится на паузу. */
+export interface PriceAlert {
+  id: string;
+  symbol: string;
+  price: number;
+  /** up — сработает при росте до цены, down — при падении */
+  dir: 'up' | 'down';
+  note?: string;
+  createdTime: number;
+}
+
 export type ExchangeEvent =
+  | { type: 'alert'; alert: PriceAlert; time: number }
   | { type: 'fill'; exec: Execution; order?: Order }
   | { type: 'order'; order: Order }
   | { type: 'reject'; order: Order; reason: string }

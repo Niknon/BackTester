@@ -18,6 +18,7 @@ import {
   type Time,
   type UTCTimestamp,
 } from 'lightweight-charts';
+import { getAsset, roundToStep } from '../../data/assets';
 import { bucketStart, chartIntervalsFor, intervalMs } from '../../data/intervals';
 import type { IntervalKey } from '../../data/types';
 import { lowerBound } from '../../data/types';
@@ -54,9 +55,11 @@ export interface ExtraLine {
   style?: LineStyle;
   width?: 1 | 2;
   axis?: boolean;
-  /** линию можно перетаскивать: изменить цену ордера / TP / SL */
-  drag?: 'price' | 'trigger';
+  /** линию можно перетаскивать: изменить цену ордера / TP / SL; custom — вызывает onLineDrag */
+  drag?: 'price' | 'trigger' | 'custom';
 }
+
+type DragKind = 'price' | 'trigger' | 'custom';
 
 interface Props {
   symbol: string;
@@ -68,6 +71,16 @@ interface Props {
   extraLines?: ExtraLine[];
   onPriceClick?: (price: number) => void;
   compact?: boolean;
+  /** перетаскивание линий с drag: 'custom' (например, границ сетки при настройке бота) */
+  onLineDrag?: (id: string, price: number) => void;
+  /** только просмотр: ордера аккаунта нельзя двигать мышью */
+  readOnly?: boolean;
+  /** рисовать линии активных ордеров аккаунта (по умолчанию да) */
+  orderLines?: boolean;
+  /** рисовать сетки других ботов (по умолчанию — по настройке «Слои») */
+  otherBots?: boolean;
+  /** цены, которые должны помещаться в видимую шкалу (границы сетки и т.п.) */
+  fitPrices?: number[];
 }
 
 const TOOLS: { tool: DrawTool; icon: string; title: string }[] = [
@@ -84,7 +97,21 @@ const TOOLS: { tool: DrawTool; icon: string; title: string }[] = [
 
 const COLORS = ['#f7a600', '#4d8dff', '#20b26c', '#ef454a', '#a78bfa', '#eaecef', '#22d3ee'];
 
-export function PriceChart({ symbol, tf, onTfChange, category = 'linear', accountId = MAIN, extraLines, onPriceClick, compact }: Props) {
+export function PriceChart({
+  symbol,
+  tf,
+  onTfChange,
+  category = 'linear',
+  accountId = MAIN,
+  extraLines,
+  onPriceClick,
+  compact,
+  onLineDrag,
+  readOnly,
+  orderLines = true,
+  otherBots = true,
+  fitPrices,
+}: Props) {
   const v = useTick();
   const ex = useSession((s) => s.ex)!;
   const prefs = useSession((s) => s.prefs);
@@ -96,8 +123,13 @@ export function PriceChart({ symbol, tf, onTfChange, category = 'linear', accoun
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const dataRef = useRef<ChartData | null>(null);
   const indRef = useRef<IndHandle | null>(null);
-  const linesRef = useRef(new Map<string, { line: IPriceLine; sig: string; price: number; drag?: 'price' | 'trigger' }>());
-  const dragRef = useRef<{ id: string; kind: 'price' | 'trigger'; price: number } | null>(null);
+  const linesRef = useRef(new Map<string, { line: IPriceLine; sig: string; price: number; drag?: DragKind }>());
+  const dragRef = useRef<{ id: string; kind: DragKind; price: number } | null>(null);
+  const onLineDragRef = useRef(onLineDrag);
+  onLineDragRef.current = onLineDrag;
+  /** диапазон цен, который автоподстройка шкалы обязана показать */
+  const fitRef = useRef<[number, number] | null>(null);
+  const fitKey = fitPrices?.filter(Number.isFinite).join(',') ?? '';
   const markerSigRef = useRef('');
   const [chart, setChart] = useState<IChartApi | null>(null);
   const [legend, setLegend] = useState<{ o: number; h: number; l: number; c: number; v: number; t: number } | null>(null);
@@ -105,6 +137,7 @@ export function PriceChart({ symbol, tf, onTfChange, category = 'linear', accoun
   const hoverRef = useRef(false);
   const onPriceClickRef = useRef(onPriceClick);
   onPriceClickRef.current = onPriceClick;
+  const [ctx, setCtx] = useState<{ x: number; y: number; price: number } | null>(null);
 
   const tfMs = intervalMs(tf);
   const chartType = prefs.chartType;
@@ -217,6 +250,15 @@ export function PriceChart({ symbol, tf, onTfChange, category = 'linear', accoun
                 wickUpColor: '#20b26c',
                 wickDownColor: '#ef454a',
               });
+      mainRef.current.applyOptions({
+        autoscaleInfoProvider: (original: () => { priceRange: { minValue: number; maxValue: number } | null } | null) => {
+          const r = original();
+          const f = fitRef.current;
+          if (!f) return r;
+          if (!r || !r.priceRange) return { priceRange: { minValue: f[0], maxValue: f[1] } };
+          return { ...r, priceRange: { minValue: Math.min(r.priceRange.minValue, f[0]), maxValue: Math.max(r.priceRange.maxValue, f[1]) } };
+        },
+      } as any);
       mainTypeRef.current = chartType;
       rebuild = true;
     }
@@ -320,7 +362,7 @@ export function PriceChart({ symbol, tf, onTfChange, category = 'linear', accoun
     }
     updateOverlays();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [v, symbol, tf, chartType, indKey, chart, prefs.showExecutions, prefs.showOrders, prefs.showBotGrids, prefs.showBotTrades, extraLines, accountId, category]);
+  }, [v, symbol, tf, chartType, indKey, chart, prefs.showExecutions, prefs.showOrders, prefs.showBotGrids, prefs.showBotTrades, extraLines, accountId, category, fitKey, readOnly, orderLines, otherBots]);
 
   /* ── маркеры сделок и линии ордеров/позиций ── */
   function updateOverlays() {
@@ -329,6 +371,14 @@ export function PriceChart({ symbol, tf, onTfChange, category = 'linear', accoun
     const d = dataRef.current;
     if (!c || !main || !d) return;
     const cats: Category[] = category === 'option' ? ['linear'] : [category];
+    // автоподстройка шкалы под заданные цены
+    const fp = fitPrices?.filter(Number.isFinite) ?? [];
+    const nextFit: [number, number] | null = fp.length ? [Math.min(...fp), Math.max(...fp)] : null;
+    const prevFit = fitRef.current;
+    if ((nextFit?.join() ?? '') !== (prevFit?.join() ?? '')) {
+      fitRef.current = nextFit;
+      main.priceScale().applyOptions({ autoScale: true });
+    }
     // маркеры
     if (!markersRef.current) markersRef.current = createSeriesMarkers(main, []);
     const botAccs = new Set(Object.values(ex.state.bots).map((b) => b.accountId));
@@ -387,7 +437,7 @@ export function PriceChart({ symbol, tf, onTfChange, category = 'linear', accoun
         if (liq && liq > 0) want.push({ id: 'liq', price: liq, color: '#f7a600', title: 'Ликвидация', style: LineStyle.Dashed });
       }
     }
-    if (prefs.showOrders && acc) {
+    if (prefs.showOrders && orderLines && acc) {
       for (const o of ex.activeOrders(accountId, symbol)) {
         if (!cats.includes(o.category)) continue;
         if (o.tag === 'tpsl') {
@@ -398,16 +448,16 @@ export function PriceChart({ symbol, tf, onTfChange, category = 'linear', accoun
             color: isTp ? '#20b26c' : '#ef454a',
             title: o.stopOrderType === 'TrailingStop' ? 'Трейлинг' : isTp ? 'TP ⇕' : 'SL ⇕',
             style: LineStyle.Dotted,
-            drag: o.stopOrderType === 'TrailingStop' ? undefined : 'trigger',
+            drag: readOnly || o.stopOrderType === 'TrailingStop' ? undefined : 'trigger',
           });
         } else if (o.status === 'Untriggered') {
-          want.push({ id: o.id, price: o.triggerPrice!, color: '#a78bfa', title: `Условн. ${o.side === 'Buy' ? 'B' : 'S'} ${o.qty} ⇕`, style: LineStyle.Dotted, drag: 'trigger' });
+          want.push({ id: o.id, price: o.triggerPrice!, color: '#a78bfa', title: `Условн. ${o.side === 'Buy' ? 'B' : 'S'} ${o.qty}${readOnly ? '' : ' ⇕'}`, style: LineStyle.Dotted, drag: readOnly ? undefined : 'trigger' });
         } else if (o.orderType === 'Limit') {
-          want.push({ id: o.id, price: o.price, color: o.side === 'Buy' ? '#20b26c' : '#ef454a', title: `Лимит ${o.side === 'Buy' ? 'B' : 'S'} ${o.qty} ⇕`, style: LineStyle.Dashed, drag: 'price' });
+          want.push({ id: o.id, price: o.price, color: o.side === 'Buy' ? '#20b26c' : '#ef454a', title: `Лимит ${o.side === 'Buy' ? 'B' : 'S'} ${o.qty}${readOnly ? '' : ' ⇕'}`, style: LineStyle.Dashed, drag: readOnly ? undefined : 'price' });
         }
       }
     }
-    if (prefs.showBotGrids) {
+    if (prefs.showBotGrids && otherBots) {
       for (const b of Object.values(ex.state.bots)) {
         if ((b.status !== 'running' && b.status !== 'waiting') || !b.symbols.includes(symbol)) continue;
         if (b.type !== 'spotGrid' && b.type !== 'futuresGrid') continue;
@@ -425,6 +475,10 @@ export function PriceChart({ symbol, tf, onTfChange, category = 'linear', accoun
         want.push({ id: `gu${b.id}`, price: p.upper, color: 'rgba(247,166,0,0.6)', title: `${b.name} ↑`, style: LineStyle.Dashed });
         want.push({ id: `gl${b.id}`, price: p.lower, color: 'rgba(247,166,0,0.6)', title: `${b.name} ↓`, style: LineStyle.Dashed });
       }
+    }
+    // ценовые алерты (перетаскиваются мышью)
+    for (const a of ex.alerts(symbol)) {
+      want.push({ id: `alert:${a.id}`, price: a.price, color: '#fbbf24', title: `🔔 ${a.note || 'Алерт'}${readOnly ? '' : ' ⇕'}`, style: LineStyle.LargeDashed, drag: readOnly ? undefined : 'custom' });
     }
     if (extraLines) want.push(...extraLines);
     const seen = new Set<string>();
@@ -471,7 +525,7 @@ export function PriceChart({ symbol, tf, onTfChange, category = 'linear', accoun
       const r = el.getBoundingClientRect();
       const y = clientY - r.top;
       if (y > (c.panes()[0]?.getHeight() ?? 0)) return null;
-      let best: { id: string; kind: 'price' | 'trigger'; d: number; price: number } | null = null;
+      let best: { id: string; kind: DragKind; d: number; price: number } | null = null;
       for (const [id, l] of linesRef.current) {
         if (!l.drag) continue;
         const ly = main.priceToCoordinate(l.price);
@@ -508,11 +562,22 @@ export function PriceChart({ symbol, tf, onTfChange, category = 'linear', accoun
       const d = dragRef.current;
       if (!d) return;
       dragRef.current = null;
+      const l = linesRef.current.get(d.id);
+      if (l) l.sig = '';
+      if (d.kind === 'custom' && d.id.startsWith('alert:')) {
+        ex.moveAlert(d.id.slice(6), d.price);
+        toast('info', 'Алерт перенесён', fmtPrice(d.price, symbol), 1800);
+        bump(true);
+        return;
+      }
+      if (d.kind === 'custom') {
+        onLineDragRef.current?.(d.id, roundToStep(d.price, getAsset(symbol).tickSize));
+        bump(true);
+        return;
+      }
       const err = ex.amendOrder(d.id, d.kind === 'price' ? { price: d.price } : { triggerPrice: d.price });
       if (err) toast('error', 'Ордер не изменён', err);
       else toast('info', 'Ордер изменён', `Новая цена ${fmtPrice(d.price, symbol)}`, 2000);
-      const l = linesRef.current.get(d.id);
-      if (l) l.sig = '';
       bump(true);
     };
     el.addEventListener('mousedown', onDown, true);
@@ -636,18 +701,72 @@ export function PriceChart({ symbol, tf, onTfChange, category = 'linear', accoun
         <div
           ref={wrapRef}
           className="absolute inset-0"
+          onMouseDown={(e) => {
+            if (e.button === 0 && ctx) setCtx(null);
+          }}
           onContextMenu={(e) => {
             const main = mainRef.current;
-            if (!main || !onPriceClickRef.current) return;
+            if (!main) return;
             e.preventDefault();
             const r = e.currentTarget.getBoundingClientRect();
             const p = main.coordinateToPrice(e.clientY - r.top);
-            if (p !== null) {
-              onPriceClickRef.current(p as number);
-              toast('info', `Цена ${fmtPrice(p as number, symbol)} подставлена в форму ордера`, undefined, 1800);
-            }
+            if (p === null) return;
+            setCtx({ x: e.clientX - r.left, y: e.clientY - r.top, price: roundToStep(p as number, getAsset(symbol).tickSize) });
           }}
         />
+        {ctx && (
+          <div
+            className="absolute z-30 bg-panel2 border border-line2 rounded-md shadow-xl py-1 text-[12px] min-w-[220px]"
+            style={{ left: Math.min(ctx.x, (wrapRef.current?.clientWidth ?? 400) - 230), top: Math.min(ctx.y, (wrapRef.current?.clientHeight ?? 300) - 130) }}
+            onMouseLeave={() => setCtx(null)}
+          >
+            <div className="px-3 py-1 text-[10px] text-muted num">Цена {fmtPrice(ctx.price, symbol)}</div>
+            {onPriceClickRef.current && (
+              <button
+                className="w-full text-left px-3 py-1.5 hover:bg-panel3"
+                onClick={() => {
+                  onPriceClickRef.current?.(ctx.price);
+                  toast('info', `Цена ${fmtPrice(ctx.price, symbol)} подставлена в форму ордера`, undefined, 1800);
+                  setCtx(null);
+                }}
+              >
+                ✎ Подставить цену в форму ордера
+              </button>
+            )}
+            <button
+              className="w-full text-left px-3 py-1.5 hover:bg-panel3"
+              onClick={() => {
+                const a = ex.addAlert(symbol, ctx.price);
+                if (a) toast('info', `🔔 Алерт ${symbol} ${a.dir === 'up' ? '≥' : '≤'} ${fmtPrice(a.price, symbol)}`, 'Симуляция встанет на паузу при касании цены', 3000);
+                setCtx(null);
+                bump(true);
+              }}
+            >
+              🔔 Алерт на этой цене (пауза при касании)
+            </button>
+            <button
+              className="w-full text-left px-3 py-1.5 hover:bg-panel3"
+              onClick={() => {
+                navigator.clipboard?.writeText(String(ctx.price)).catch(() => {});
+                setCtx(null);
+              }}
+            >
+              ⧉ Скопировать цену
+            </button>
+            {ex.alerts(symbol).length > 0 && (
+              <button
+                className="w-full text-left px-3 py-1.5 hover:bg-panel3 text-muted"
+                onClick={() => {
+                  for (const a of ex.alerts(symbol)) ex.removeAlert(a.id);
+                  setCtx(null);
+                  bump(true);
+                }}
+              >
+                ✕ Удалить все алерты {symbol} ({ex.alerts(symbol).length})
+              </button>
+            )}
+          </div>
+        )}
         {legend && (
           <div className="absolute left-2 top-1.5 z-20 pointer-events-none text-[11px] num flex flex-wrap gap-x-2">
             <span className="text-text font-semibold">{symbol}</span>

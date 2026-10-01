@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ASSETS, getAsset, hasAsset, registerAsset } from '../data/assets';
+import { ASSETS, getAsset, hasAsset, kindLabel, registerAsset } from '../data/assets';
 import { DAY, INTERVALS, intervalMs } from '../data/intervals';
 import { PROVIDER_LIST } from '../data/loader';
 import type { IntervalKey, ProviderId } from '../data/types';
 import { idbClear } from '../data/cache';
-import { fetchBybitOptionBases, syncInstrumentsFromBybit } from '../data/providers/bybit';
+import { fetchBybitOptionBases, syncInstrumentsFromBybit, syncSpotTradFiFromBybit } from '../data/providers/bybit';
 import { DEFAULT_FEES, DEFAULT_OPTION_MODEL, type SessionConfig } from '../engine/types';
 import {
   deleteSession,
@@ -45,13 +45,21 @@ function AssetPicker({ selected, onToggle }: { selected: string[]; onToggle: (s:
   const groups = [
     { title: 'Базовые активы опционов Bybit — крипто', items: ASSETS.filter((a) => a.hasOptions && a.group === 'crypto') },
     { title: 'Perp Options Bybit — TradFi (акции/ETF)', items: ASSETS.filter((a) => a.hasOptions && a.group === 'tradfi') },
-    { title: 'Другие USDT-перпетуалы', items: ASSETS.filter((a) => !a.hasOptions) },
+    { title: 'Другие USDT-перпетуалы', items: ASSETS.filter((a) => !a.hasOptions && !a.spotOnly) },
+    {
+      title: 'TradFi на споте — токенизированные акции и ETF (xStocks), золото. Только спот, 24/7',
+      note: 'История xStocks на Bybit — с июля 2025. Резервный источник (OKX, перпетуалы на те же акции) — примерно с марта 2026; для более ранних дат без доступа к Bybit используйте «Синтетику».',
+      items: ASSETS.filter((a) => a.group === 'xstock' || a.group === 'commodity'),
+    },
   ];
   return (
     <div className="flex flex-col gap-3">
       {groups.map((g) => (
         <div key={g.title}>
-          <div className="text-[11px] text-muted mb-1.5">{g.title}</div>
+          <div className="text-[11px] text-muted mb-1.5">
+            {g.title}
+            {'note' in g && g.note && <div className="text-[10px] text-dim mt-0.5">{g.note}</div>}
+          </div>
           <div className="flex flex-wrap gap-1.5">
             {g.items.map((a) => {
               const on = selected.includes(a.symbol);
@@ -59,7 +67,7 @@ function AssetPicker({ selected, onToggle }: { selected: string[]; onToggle: (s:
                 <button
                   key={a.symbol}
                   onClick={() => onToggle(a.symbol)}
-                  title={`${a.name} · макс. плечо ${a.maxLeverage}x${a.hasOptions ? ' · есть опционы' : ''}`}
+                  title={a.spotOnly ? `${a.name} · ${kindLabel(a)}` : `${a.name} · макс. плечо ${a.maxLeverage}x${a.hasOptions ? ' · есть опционы' : ''}`}
                   className={cx(
                     'px-2.5 h-7 rounded-md border text-[12px] transition-colors',
                     on ? 'border-brand bg-brand/10 text-brand font-semibold' : 'border-line2 text-muted hover:text-text hover:border-dim',
@@ -191,6 +199,7 @@ export function SetupPage() {
     if (bybitSynced) return;
     bybitSynced = true;
     syncInstrumentsFromBybit().catch(() => {});
+    syncSpotTradFiFromBybit().catch(() => {});
   }, []);
   const setS = useSession((s) => s.set);
   const today = dayStart(Date.now());
@@ -262,6 +271,7 @@ export function SetupPage() {
     setSyncing(true);
     try {
       const n = await syncInstrumentsFromBybit();
+      const nx = await syncSpotTradFiFromBybit().catch(() => 0);
       const bases = await fetchBybitOptionBases();
       setLiveBases(bases);
       for (const b of bases) {
@@ -269,7 +279,7 @@ export function SetupPage() {
         const a = getAsset(sym);
         if (!a.hasOptions) registerAsset({ ...a, hasOptions: true });
       }
-      toast('success', 'Инструменты синхронизированы с Bybit', `${n} перпетуалов; опционы: ${bases.join(', ') || '—'}`);
+      toast('success', 'Инструменты синхронизированы с Bybit', `${n} перпетуалов, ${nx} xStocks/золото; опционы: ${bases.join(', ') || '—'}`);
     } catch (e: any) {
       toast('error', 'Bybit недоступен', `${e?.message || e}. Используются встроенные спецификации.`, 8000);
     } finally {

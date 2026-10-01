@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ASSETS, getAsset, roundToStep, spotQtyStep } from '../../data/assets';
-import { gridLevels } from '../../engine/bots/grid';
+import { gridLevels, maxFeasibleGrids } from '../../engine/bots/grid';
 import { suggestFuturesGrid, suggestSpotGrid } from '../../engine/bots/suggest';
 import { COMBO_UTILIZATION } from '../../engine/bots/combo';
 import type { BotParamsMap, BotType, ComboLeg, GridMode } from '../../engine/bots/types';
@@ -8,6 +8,7 @@ import { ensureSymbol } from '../../store/actions';
 import { useSession, useTick, toast } from '../../store/session';
 import { fmtNum, fmtPct, fmtPrice, fmtUsd } from '../../lib/format';
 import { Check, cx, Help, NumInput, PercentSlider, Row, Segmented, Select } from '../ui';
+import type { BotPreview } from './botChart';
 
 export interface FormResult<T extends BotType = BotType> {
   type: T;
@@ -20,15 +21,43 @@ interface FormProps {
   onSubmit: (r: FormResult, mode: 'live' | 'backtest') => void;
   busy?: boolean;
   initialSymbol: string;
+  /** параметры для предпросмотра на графике */
+  onPreview?: (p: BotPreview | null) => void;
+  /** линия перетащена на графике: id ('pv:lower', 'pv:upper', …) и новая цена */
+  chartDrag?: { id: string; price: number; n: number };
+}
+
+/** Сообщает странице параметры для предпросмотра (без лишних вызовов при каждом рендере). */
+function usePreview(onPreview: FormProps['onPreview'], p: BotPreview | null) {
+  const key = JSON.stringify(p);
+  useEffect(() => {
+    onPreview?.(p);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+}
+
+/** Применить перетаскивание линии на графике к полям формы. */
+function useChartDrag(drag: FormProps['chartDrag'], map: Record<string, (v: number) => void>) {
+  useEffect(() => {
+    if (drag) map[drag.id]?.(drag.price);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drag?.n]);
 }
 
 /* ───────── общие элементы ───────── */
 
-function SymbolPick({ value, onChange, label = 'Пара' }: { value: string; onChange: (s: string) => void; label?: string }) {
+/** Для фьючерсных ботов спотовые инструменты (xStocks, золото) недоступны. */
+export function perpOr(symbol: string, ex: { market: { symbols(): string[] } }) {
+  if (!getAsset(symbol).spotOnly) return symbol;
+  return ex.market.symbols().find((s) => !getAsset(s).spotOnly) ?? 'BTCUSDT';
+}
+
+function SymbolPick({ value, onChange, label = 'Пара', spot = false }: { value: string; onChange: (s: string) => void; label?: string; spot?: boolean }) {
   const ex = useSession((s) => s.ex)!;
   const loading = useSession((s) => s.loadingSymbols);
-  const loaded = ex.market.symbols();
-  const opts = [...loaded, ...ASSETS.map((a) => a.symbol).filter((s) => !loaded.includes(s))];
+  const ok = (s: string) => spot || !getAsset(s).spotOnly;
+  const loaded = ex.market.symbols().filter(ok);
+  const opts = [...loaded, ...ASSETS.map((a) => a.symbol).filter((s) => ok(s) && !loaded.includes(s))];
   return (
     <label className="field">
       <span className="lbl">{label}</span>
@@ -90,10 +119,36 @@ function SubmitButtons({ onLive, onBacktest, busy, disabled }: { onLive: () => v
   );
 }
 
-function GridStats({ symbol, lower, upper, grids, mode, investment, leverage = 1, fee, spot }: { symbol: string; lower: number; upper: number; grids: number; mode: GridMode; investment: number; leverage?: number; fee: number; spot?: boolean }) {
+function GridStats({
+  symbol,
+  lower,
+  upper,
+  grids,
+  mode,
+  investment,
+  leverage = 1,
+  fee,
+  spot,
+  onGrids,
+}: {
+  symbol: string;
+  lower: number;
+  upper: number;
+  grids: number;
+  mode: GridMode;
+  investment: number;
+  leverage?: number;
+  fee: number;
+  spot?: boolean;
+  /** предложить допустимое число сеток */
+  onGrids?: (n: number) => void;
+}) {
   if (!(upper > lower) || !(grids >= 2)) return null;
+  const minQty = spot ? spotQtyStep(symbol) : getAsset(symbol).minQty;
   const tick = getAsset(symbol).tickSize;
   const levels = gridLevels(lower, upper, grids, mode, tick);
+  const maxGrids = maxFeasibleGrids(symbol, lower, upper, mode, investment, leverage, minQty);
+  const needInv = Math.ceil((minQty * (levels.reduce((a, b) => a + b, 0) - levels[0])) / (leverage * 0.9));
   let minP = Infinity;
   let maxP = -Infinity;
   for (let i = 1; i < levels.length; i++) {
@@ -108,6 +163,17 @@ function GridStats({ symbol, lower, upper, grids, mode, investment, leverage = 1
       <Row label="Прибыль на сетку (после комиссий)" value={<span className={minP > 0 ? 'text-up' : 'text-down'}>{fmtPct(minP, 3, false)} – {fmtPct(maxP, 3, false)}</span>} />
       <Row label="Шаг сетки" value={fmtPrice(levels[1] - levels[0], symbol)} />
       <Row label="Объём на уровень ≈" value={`${fmtNum(roundToStep(qty, spot ? spotQtyStep(symbol) : getAsset(symbol).qtyStep, 'floor'), 6)} ${getAsset(symbol).base}`} />
+      {grids > maxGrids && (
+        <div className="mt-1.5 text-down leading-snug">
+          ⚠ Объём уровня меньше минимального лота ({minQty} {getAsset(symbol).base}). Увеличьте инвестиции до ≈{fmtUsd(needInv, 0)} USDT
+          {!spot && ' или плечо'}, либо уменьшите число сеток до {Math.max(2, maxGrids)}.
+          {onGrids && maxGrids >= 2 && (
+            <button className="btn btn-sm ml-1 !h-5 !text-[10px]" onClick={() => onGrids(maxGrids)}>
+              Сеток: {maxGrids}
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -138,7 +204,7 @@ function LeverageControl({ value, onChange, max, hint }: { value: number; onChan
 
 /* ───────── Спотовый грид ───────── */
 
-export function SpotGridForm({ onSubmit, busy, initialSymbol }: FormProps) {
+export function SpotGridForm({ onSubmit, busy, initialSymbol, onPreview, chartDrag }: FormProps) {
   const ex = useSession((s) => s.ex)!;
   const [symbol, setSymbol] = useState(initialSymbol);
   const [lower, setLower] = useState<number | ''>('');
@@ -151,8 +217,10 @@ export function SpotGridForm({ onSubmit, busy, initialSymbol }: FormProps) {
   const [sl, setSl] = useState<number | ''>('');
   const [sellOnStop, setSellOnStop] = useState(true);
   const [days, setDays] = useState(7);
+  usePreview(onPreview, { kind: 'grid', symbol, lower: Number(lower), upper: Number(upper), grids: Number(grids), mode, trigger: Number(trigger) || undefined, tp: Number(tp) || undefined, sl: Number(sl) || undefined });
+  useChartDrag(chartDrag, { 'pv:lower': setLower, 'pv:upper': setUpper, 'pv:trigger': setTrigger, 'pv:tp': setTp, 'pv:sl': setSl });
   const auto = () => {
-    const s = suggestSpotGrid(ex, symbol, days);
+    const s = suggestSpotGrid(ex, symbol, days, Number(inv) || undefined);
     if (!s) return toast('warn', 'Недостаточно истории для авто-параметров');
     setLower(s.lower);
     setUpper(s.upper);
@@ -178,7 +246,7 @@ export function SpotGridForm({ onSubmit, busy, initialSymbol }: FormProps) {
   });
   return (
     <div className="flex flex-col gap-3">
-      <SymbolPick value={symbol} onChange={setSymbol} />
+      <SymbolPick value={symbol} onChange={setSymbol} spot />
       <div className="flex items-center gap-2">
         <button className="btn btn-sm !bg-brand/15 !text-brand" onClick={auto}>
           ✨ AI-параметры
@@ -192,7 +260,7 @@ export function SpotGridForm({ onSubmit, busy, initialSymbol }: FormProps) {
         <NumInput label="Сеток" value={grids} onChange={setGrids} step={1} />
         <Select value={mode} onChange={setMode} options={[{ value: 'geometric', label: 'Геометрическая' }, { value: 'arithmetic', label: 'Арифметическая' }]} />
       </div>
-      <GridStats symbol={symbol} lower={Number(lower)} upper={Number(upper)} grids={Number(grids)} mode={mode} investment={Number(inv)} fee={ex.config.fees.spotMaker} spot />
+      <GridStats symbol={symbol} lower={Number(lower)} upper={Number(upper)} grids={Number(grids)} mode={mode} investment={Number(inv)} fee={ex.config.fees.spotMaker} spot onGrids={setGrids} />
       <Investment value={inv} onChange={setInv} min={10} />
       <details className="text-[12px]">
         <summary className="cursor-pointer text-muted">Дополнительно: условие запуска, TP/SL</summary>
@@ -212,9 +280,9 @@ export function SpotGridForm({ onSubmit, busy, initialSymbol }: FormProps) {
 
 /* ───────── Фьючерсный грид ───────── */
 
-export function FuturesGridForm({ onSubmit, busy, initialSymbol }: FormProps) {
+export function FuturesGridForm({ onSubmit, busy, initialSymbol, onPreview, chartDrag }: FormProps) {
   const ex = useSession((s) => s.ex)!;
-  const [symbol, setSymbol] = useState(initialSymbol);
+  const [symbol, setSymbol] = useState(() => perpOr(initialSymbol, useSession.getState().ex!));
   const [dir, setDir] = useState<'long' | 'short' | 'neutral'>('neutral');
   const [lower, setLower] = useState<number | ''>('');
   const [upper, setUpper] = useState<number | ''>('');
@@ -229,8 +297,10 @@ export function FuturesGridForm({ onSubmit, busy, initialSymbol }: FormProps) {
   const [slRoi, setSlRoi] = useState<number | ''>('');
   const [days, setDays] = useState(7);
   const max = getAsset(symbol).maxLeverage;
+  usePreview(onPreview, { kind: 'grid', symbol, lower: Number(lower), upper: Number(upper), grids: Number(grids), mode, direction: dir, trigger: Number(trigger) || undefined, tp: Number(tp) || undefined, sl: Number(sl) || undefined });
+  useChartDrag(chartDrag, { 'pv:lower': setLower, 'pv:upper': setUpper, 'pv:trigger': setTrigger, 'pv:tp': setTp, 'pv:sl': setSl });
   const auto = () => {
-    const s = suggestFuturesGrid(ex, symbol, days);
+    const s = suggestFuturesGrid(ex, symbol, days, Number(inv) || undefined);
     if (!s) return toast('warn', 'Недостаточно истории для авто-параметров');
     setLower(s.lower);
     setUpper(s.upper);
@@ -286,7 +356,7 @@ export function FuturesGridForm({ onSubmit, busy, initialSymbol }: FormProps) {
         <Select value={mode} onChange={setMode} options={[{ value: 'geometric', label: 'Геометрическая' }, { value: 'arithmetic', label: 'Арифметическая' }]} />
       </div>
       <LeverageControl value={lev} onChange={setLev} max={max} />
-      <GridStats symbol={symbol} lower={Number(lower)} upper={Number(upper)} grids={Number(grids)} mode={mode} investment={Number(inv)} leverage={lev} fee={ex.config.fees.linearMaker} />
+      <GridStats symbol={symbol} lower={Number(lower)} upper={Number(upper)} grids={Number(grids)} mode={mode} investment={Number(inv)} leverage={lev} fee={ex.config.fees.linearMaker} onGrids={setGrids} />
       <Investment value={inv} onChange={setInv} min={10} />
       <details className="text-[12px]">
         <summary className="cursor-pointer text-muted">Дополнительно: запуск, TP/SL</summary>
@@ -305,11 +375,11 @@ export function FuturesGridForm({ onSubmit, busy, initialSymbol }: FormProps) {
 
 /* ───────── Комбо (ребалансировка) ───────── */
 
-export function ComboForm({ onSubmit, busy }: FormProps) {
+export function ComboForm({ onSubmit, busy, onPreview }: FormProps) {
   const ex = useSession((s) => s.ex)!;
-  const loaded = ex.market.symbols();
+  const loaded = ex.market.symbols().filter((x) => !getAsset(x).spotOnly);
   const [legs, setLegs] = useState<ComboLeg[]>(() => {
-    const syms = loaded.slice(0, 3);
+    const syms = loaded.length ? loaded.slice(0, 3) : ['BTCUSDT'];
     const w = Math.floor((100 / Math.max(1, syms.length)) * 100) / 100;
     return syms.map((s, i) => ({ symbol: s, side: i === 0 ? 'long' : i === 1 ? 'short' : 'long', weight: i === syms.length - 1 ? Number((100 - w * (syms.length - 1)).toFixed(2)) : w }));
   });
@@ -321,6 +391,7 @@ export function ComboForm({ onSubmit, busy }: FormProps) {
   const [tpRoi, setTpRoi] = useState<number | ''>('');
   const [slRoi, setSlRoi] = useState<number | ''>('');
   const sum = legs.reduce((s, l) => s + (Number(l.weight) || 0), 0);
+  usePreview(onPreview, legs[0] ? { kind: 'combo', symbol: legs[0].symbol } : null);
   const maxLev = Math.min(...legs.map((l) => getAsset(l.symbol).maxLeverage), 100);
   const equalize = () => {
     const n = legs.length;
@@ -365,7 +436,7 @@ export function ComboForm({ onSubmit, busy }: FormProps) {
           </div>
         ))}
         <div className="flex gap-2 items-center">
-          <button className="btn btn-sm" onClick={() => setLegs([...legs, { symbol: loaded.find((s) => !legs.some((l) => l.symbol === s)) ?? loaded[0], side: 'long', weight: 0 }])}>
+          <button className="btn btn-sm" onClick={() => setLegs([...legs, { symbol: loaded.find((s) => !legs.some((l) => l.symbol === s)) ?? loaded[0] ?? 'BTCUSDT', side: 'long', weight: 0 }])}>
             + Монета
           </button>
           <button className="btn btn-sm btn-ghost" onClick={equalize}>
@@ -420,13 +491,15 @@ export function ComboForm({ onSubmit, busy }: FormProps) {
 
 /* ───────── DCA ───────── */
 
-export function DcaForm({ onSubmit, busy, initialSymbol }: FormProps) {
+export function DcaForm({ onSubmit, busy, initialSymbol, onPreview, chartDrag }: FormProps) {
   const [symbol, setSymbol] = useState(initialSymbol);
   const [amount, setAmount] = useState<number | ''>(100);
   const [interval, setIntervalH] = useState<number | ''>(24);
   const [maxOrders, setMaxOrders] = useState<number | ''>(10);
   const [below, setBelow] = useState<number | ''>('');
   const [tp, setTp] = useState<number | ''>('');
+  usePreview(onPreview, { kind: 'dca', symbol, priceBelow: Number(below) || undefined, tpPct: Number(tp) || undefined });
+  useChartDrag(chartDrag, { 'pv:below': setBelow });
   const inv = (Number(amount) || 0) * (Number(maxOrders) || 0);
   const result = (): FormResult<'dca'> => ({
     type: 'dca',
@@ -444,7 +517,7 @@ export function DcaForm({ onSubmit, busy, initialSymbol }: FormProps) {
   return (
     <div className="flex flex-col gap-3">
       <div className="text-[11px] text-muted">Регулярные спотовые покупки на фиксированную сумму (усреднение цены входа). Опционально — продажа всего объёма при достижении прибыли.</div>
-      <SymbolPick value={symbol} onChange={setSymbol} />
+      <SymbolPick value={symbol} onChange={setSymbol} spot />
       <NumInput label="Сумма покупки" value={amount} onChange={setAmount} suffix="USDT" step={10} />
       <NumInput label="Каждые" value={interval} onChange={setIntervalH} suffix="часов" step={1} />
       <NumInput label="Число покупок" value={maxOrders} onChange={setMaxOrders} step={1} />
@@ -458,8 +531,8 @@ export function DcaForm({ onSubmit, busy, initialSymbol }: FormProps) {
 
 /* ───────── Мартингейл ───────── */
 
-export function MartingaleForm({ onSubmit, busy, initialSymbol }: FormProps) {
-  const [symbol, setSymbol] = useState(initialSymbol);
+export function MartingaleForm({ onSubmit, busy, initialSymbol, onPreview }: FormProps) {
+  const [symbol, setSymbol] = useState(() => perpOr(initialSymbol, useSession.getState().ex!));
   const [side, setSide] = useState<'long' | 'short'>('long');
   const [lev, setLev] = useState(5);
   const [init, setInit] = useState<number | ''>(20);
@@ -470,6 +543,7 @@ export function MartingaleForm({ onSubmit, busy, initialSymbol }: FormProps) {
   const [sl, setSl] = useState<number | ''>('');
   const [loop, setLoop] = useState(true);
   const max = getAsset(symbol).maxLeverage;
+  usePreview(onPreview, { kind: 'martingale', symbol, side, stepPct: Number(step) || 0, maxAdds: Number(adds) || 0, multiplier: Number(mult) || 1, tpPct: Number(tp) || 0, slPct: Number(sl) || undefined });
   const need = useMemo(() => {
     let t = 0;
     for (let i = 0; i <= (Number(adds) || 0); i++) t += (Number(init) || 0) * (Number(mult) || 1) ** i;

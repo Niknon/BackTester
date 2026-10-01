@@ -7,9 +7,10 @@ import { blackScholes, expiryCode, optionQtyStep, optionSymbol, optionTickSize, 
 import type { Side } from '../engine/types';
 import { ensureSymbol } from '../store/actions';
 import { bump, toast, useSession, useTick } from '../store/session';
-import { fmtNum, fmtPct, fmtPrice, fmtShortDate, fmtTime, fmtUsd, pnlClass, autoDecimals } from '../lib/format';
-import { Badge, cx, Empty, NumInput, Row, Segmented, Tabs, useResizable } from '../components/ui';
+import { fmtNum, fmtPct, fmtPrice, fmtShortDate, fmtTime, fmtUsd, pnlClass, autoDecimals, exactDecimals } from '../lib/format';
+import { Badge, cx, Empty, NumInput, Row, Segmented, Tabs, usePersistent, useResizable } from '../components/ui';
 import { PositionsTable } from '../components/trade/BottomPanel';
+import { AllPositions, positionsCount } from '../components/positions/AllPositions';
 import { LineStyle } from 'lightweight-charts';
 import { PayoffChart, breakevens, payoffAtExpiry, type PayoffLeg } from '../components/options/PayoffChart';
 import { PriceChart, type ExtraLine } from '../components/chart/PriceChart';
@@ -77,7 +78,15 @@ export function OptionsPage() {
   const expiries = loaded ? ex.optionExpiries(base) : [];
   const [expiry, setExpiry] = useState<number>(0);
   const [draft, setDraft] = useState<Draft | null>(null);
-  const [bottom, setBottom] = useState<'positions' | 'orders' | 'builder' | 'history' | 'perps' | 'vol'>('positions');
+  const [bottom, setBottom] = usePersistent<'positions' | 'orders' | 'builder' | 'history' | 'perps' | 'vol' | 'all'>('bt-opt-bottom-tab', 'positions', [
+    'positions',
+    'orders',
+    'builder',
+    'history',
+    'perps',
+    'vol',
+    'all',
+  ]);
   const [builder, setBuilder] = useState<BuilderLeg[]>([]);
   const [greekCols, setGreekCols] = useState(false);
   const [view, setView] = useState<'chain' | 'split' | 'chart'>(() => (localStorage.getItem('bt-opt-view') as any) || 'split');
@@ -91,6 +100,18 @@ export function OptionsPage() {
   const chain = useMemo(() => (loaded && expiry ? ex.optionChain(base, expiry) : null), [ex, base, expiry, loaded, ex.now, ex.state.cursor]);
   const S = chain?.S ?? NaN;
   const rv = realizedVolAt(ex.market.rv.get(underlying), ex.now);
+  // в тикете всегда выбран опцион: по умолчанию ATM-колл; при смене экспирации/актива — ближайший страйк того же типа
+  const chainKey = chain?.rows.map((r) => r.strike).join() ?? '';
+  useEffect(() => {
+    if (!chain || !chain.rows.length) return;
+    const inst = draft ? ex.optionInstrument(draft.symbol) : null;
+    if (inst && inst.base === base && inst.expiry === expiry && chain.rows.some((r) => r.strike === inst.strike)) return;
+    const target = inst && inst.base === base ? inst.strike : chain.S;
+    const row = chain.rows.reduce((b, r) => (Math.abs(r.strike - target) < Math.abs(b.strike - target) ? r : b));
+    const t = inst?.type ?? 'C';
+    setDraft({ symbol: t === 'C' ? row.call.inst.symbol : row.put.inst.symbol, side: draft?.side ?? 'Buy' });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chainKey, base, expiry]);
 
   // позиции по опционам этого базового актива
   const optPositions = Object.values(ex.main.positions).filter((p) => p.category === 'option' && p.symbol.startsWith(base + '-'));
@@ -198,7 +219,12 @@ export function OptionsPage() {
           <Info label="Модель IV" value={ex.config.options.ivSource === 'realized' ? `RV × ${ex.config.options.ivPremium}` : ex.config.options.ivSource === 'dvol' ? 'DVOL' : 'фикс.'} />
           <Info label="Портфель Δ / Γ" value={`${fmtNum(greeks.delta, 3)} / ${fmtNum(greeks.gamma, 5)}`} />
           <Info label="Вега / Тета (день)" value={<span>{fmtNum(greeks.vega, 2)} / <span className={pnlClass(greeks.theta)}>{fmtNum(greeks.theta, 2)}</span></span>} />
-          <label className="ml-auto flex items-center gap-2 text-muted text-[11px]">
+          <span className="ml-auto text-[11px] text-dim text-right leading-tight">
+            Клик по строке цепочки — выбрать колл (слева) или пут (справа).
+            <br />
+            Bid — цена продажи, Ask — цена покупки. Сторону выберите в тикете справа.
+          </span>
+          <label className="flex items-center gap-2 text-muted text-[11px]">
             <input type="checkbox" className="checkbox" checked={greekCols} onChange={(e) => setGreekCols(e.target.checked)} /> Гамма/Вега/Тета в цепочке
           </label>
         </div>
@@ -227,8 +253,13 @@ export function OptionsPage() {
         <div className="w-[340px] shrink-0 bg-panel rounded-lg overflow-auto">
           <OptionOrderPanel
             draft={draft}
+            setDraft={setDraft}
+            chain={chain}
+            base={base}
+            expiries={expiries}
+            expiry={expiry}
+            onExpiry={setExpiry}
             portfolio={legs}
-            onSide={(side) => draft && setDraft({ ...draft, side })}
             onAddToBuilder={(leg) => {
               setBuilder((b) => [...b, { ...leg, id: Date.now() }]);
               setBottom('builder');
@@ -243,6 +274,7 @@ export function OptionsPage() {
           onChange={setBottom}
           tabs={[
             { value: 'positions', label: `Позиции и профиль (${optPositions.length})` },
+            { value: 'all', label: `Все позиции (${positionsCount(ex)})` },
             { value: 'orders', label: `Ордера (${optOrders.length})` },
             { value: 'builder', label: `Конструктор стратегий${builder.length ? ` (${builder.length})` : ''}` },
             { value: 'perps', label: `Фьючерсы (${perpCount})` },
@@ -277,6 +309,7 @@ export function OptionsPage() {
             </div>
           )}
           {bottom === 'orders' && <OptionOrders />}
+          {bottom === 'all' && <AllPositions />}
           {bottom === 'builder' && (
             <Builder
               legs={builder}
@@ -412,6 +445,7 @@ function ChainTable({
 }) {
   const ex = useSession((s) => s.ex)!;
   const atmRef = useRef<HTMLTableRowElement>(null);
+  const [hover, setHover] = useState<string | null>(null);
   const expiryKey = chain?.rows[0]?.call.inst.expiry ?? 0;
   useEffect(() => {
     const el = atmRef.current;
@@ -425,19 +459,35 @@ function ChainTable({
   const f = (x: number) => (x > 0 ? fmtNum(x, pd) : '—');
   let atmInserted = false;
   const rows: React.ReactNode[] = [];
+  const sel = draft?.symbol;
+  /** ячейка цены: клик выбирает опцион и сторону (Bid → продать, Ask → купить) */
   const cellBtn = (q: OptionQuote, side: Side, val: number) => (
     <button
       className={cx(
-        'num px-1.5 py-0.5 rounded hover:bg-panel3',
+        'num px-1.5 py-0.5 rounded hover:bg-panel3 hover:underline',
         side === 'Buy' ? 'text-down' : 'text-up',
-        draft?.symbol === q.inst.symbol && draft.side === side && 'ring-1 ring-brand',
+        sel === q.inst.symbol && draft!.side === side && 'ring-1 ring-brand font-semibold',
       )}
       disabled={val <= 0}
-      onClick={() => onPick({ symbol: q.inst.symbol, side })}
+      title={side === 'Buy' ? 'Ask — цена, по которой можно КУПИТЬ' : 'Bid — цена, по которой можно ПРОДАТЬ'}
+      onClick={(e) => {
+        e.stopPropagation();
+        onPick({ symbol: q.inst.symbol, side });
+      }}
     >
       {f(val)}
     </button>
   );
+  /** половина строки (колл или пут): клик в любом месте выбирает опцион, сторона сохраняется */
+  const half = (q: OptionQuote, itm: boolean) => {
+    const isSel = sel === q.inst.symbol;
+    const isHover = hover === q.inst.symbol;
+    return {
+      onClick: () => onPick({ symbol: q.inst.symbol, side: draft?.side ?? 'Buy' }),
+      onMouseEnter: () => setHover(q.inst.symbol),
+      className: cx('cursor-pointer', isSel ? 'bg-brand/15' : isHover ? 'bg-panel3/70' : itm && 'bg-brand/[0.04]'),
+    };
+  };
   for (const r of chain.rows) {
     if (!atmInserted && r.strike > S) {
       atmInserted = true;
@@ -457,27 +507,32 @@ function ChainTable({
     const putItm = r.strike > S;
     const cp = pos[r.call.inst.symbol]?.size;
     const pp = pos[r.put.inst.symbol]?.size;
+    const c = half(r.call, callItm);
+    const pt = half(r.put, putItm);
+    const rowSel = sel === r.call.inst.symbol || sel === r.put.inst.symbol;
+    const pe = { onClick: pt.onClick, onMouseEnter: pt.onMouseEnter };
+    const ce = { onClick: c.onClick, onMouseEnter: c.onMouseEnter };
     rows.push(
-      <tr key={r.strike}>
-        <td className={cx('text-right', callItm && 'bg-brand/[0.04]')}>{cp ? <span className={cp > 0 ? 'text-up' : 'text-down'}>{fmtNum(cp, 2)}</span> : ''}</td>
-        {greekCols && <td className={cx('text-right text-muted', callItm && 'bg-brand/[0.04]')}>{fmtNum(r.call.greeks.theta, 2)}</td>}
-        {greekCols && <td className={cx('text-right text-muted', callItm && 'bg-brand/[0.04]')}>{fmtNum(r.call.greeks.vega, 2)}</td>}
-        {greekCols && <td className={cx('text-right text-muted', callItm && 'bg-brand/[0.04]')}>{fmtNum(r.call.greeks.gamma, 5)}</td>}
-        <td className={cx('text-right', callItm && 'bg-brand/[0.04]')}>{fmtNum(r.call.greeks.delta, 3)}</td>
-        <td className={cx('text-right text-muted', callItm && 'bg-brand/[0.04]')}>{(r.call.iv * 100).toFixed(1)}%</td>
-        <td className={cx('text-right', callItm && 'bg-brand/[0.04]')}>{cellBtn(r.call, 'Sell', r.call.bid)}</td>
-        <td className={cx('text-right text-muted', callItm && 'bg-brand/[0.04]')}>{f(r.call.mark)}</td>
-        <td className={cx('text-right', callItm && 'bg-brand/[0.04]')}>{cellBtn(r.call, 'Buy', r.call.ask)}</td>
-        <td className="text-center font-bold bg-panel2 num">{fmtNum(r.strike, Math.min(strikeDec, 6))}</td>
-        <td className={cx(putItm && 'bg-brand/[0.04]')}>{cellBtn(r.put, 'Sell', r.put.bid)}</td>
-        <td className={cx('text-muted', putItm && 'bg-brand/[0.04]')}>{f(r.put.mark)}</td>
-        <td className={cx(putItm && 'bg-brand/[0.04]')}>{cellBtn(r.put, 'Buy', r.put.ask)}</td>
-        <td className={cx('text-muted', putItm && 'bg-brand/[0.04]')}>{(r.put.iv * 100).toFixed(1)}%</td>
-        <td className={cx(putItm && 'bg-brand/[0.04]')}>{fmtNum(r.put.greeks.delta, 3)}</td>
-        {greekCols && <td className={cx('text-muted', putItm && 'bg-brand/[0.04]')}>{fmtNum(r.put.greeks.gamma, 5)}</td>}
-        {greekCols && <td className={cx('text-muted', putItm && 'bg-brand/[0.04]')}>{fmtNum(r.put.greeks.vega, 2)}</td>}
-        {greekCols && <td className={cx('text-muted', putItm && 'bg-brand/[0.04]')}>{fmtNum(r.put.greeks.theta, 2)}</td>}
-        <td>{pp ? <span className={pp > 0 ? 'text-up' : 'text-down'}>{fmtNum(pp, 2)}</span> : ''}</td>
+      <tr key={r.strike} onMouseLeave={() => setHover(null)}>
+        <td {...ce} className={cx('text-right', c.className)}>{cp ? <span className={cp > 0 ? 'text-up' : 'text-down'}>{fmtNum(cp, 2)}</span> : ''}</td>
+        {greekCols && <td {...ce} className={cx('text-right text-muted', c.className)}>{fmtNum(r.call.greeks.theta, 2)}</td>}
+        {greekCols && <td {...ce} className={cx('text-right text-muted', c.className)}>{fmtNum(r.call.greeks.vega, 2)}</td>}
+        {greekCols && <td {...ce} className={cx('text-right text-muted', c.className)}>{fmtNum(r.call.greeks.gamma, 5)}</td>}
+        <td {...ce} className={cx('text-right', c.className)}>{fmtNum(r.call.greeks.delta, 3)}</td>
+        <td {...ce} className={cx('text-right text-muted', c.className)}>{(r.call.iv * 100).toFixed(1)}%</td>
+        <td {...ce} className={cx('text-right', c.className)}>{cellBtn(r.call, 'Sell', r.call.bid)}</td>
+        <td {...ce} className={cx('text-right text-muted', c.className)}>{f(r.call.mark)}</td>
+        <td {...ce} className={cx('text-right', c.className)}>{cellBtn(r.call, 'Buy', r.call.ask)}</td>
+        <td className={cx('text-center font-bold num', rowSel ? 'bg-brand/25 text-brand' : 'bg-panel2')}>{fmtNum(r.strike, exactDecimals(r.strike))}</td>
+        <td {...pe} className={pt.className}>{cellBtn(r.put, 'Sell', r.put.bid)}</td>
+        <td {...pe} className={cx('text-muted', pt.className)}>{f(r.put.mark)}</td>
+        <td {...pe} className={pt.className}>{cellBtn(r.put, 'Buy', r.put.ask)}</td>
+        <td {...pe} className={cx('text-muted', pt.className)}>{(r.put.iv * 100).toFixed(1)}%</td>
+        <td {...pe} className={pt.className}>{fmtNum(r.put.greeks.delta, 3)}</td>
+        {greekCols && <td {...pe} className={cx('text-muted', pt.className)}>{fmtNum(r.put.greeks.gamma, 5)}</td>}
+        {greekCols && <td {...pe} className={cx('text-muted', pt.className)}>{fmtNum(r.put.greeks.vega, 2)}</td>}
+        {greekCols && <td {...pe} className={cx('text-muted', pt.className)}>{fmtNum(r.put.greeks.theta, 2)}</td>}
+        <td {...pe} className={pt.className}>{pp ? <span className={pp > 0 ? 'text-up' : 'text-down'}>{fmtNum(pp, 2)}</span> : ''}</td>
       </tr>,
     );
   }
@@ -522,18 +577,29 @@ function ChainTable({
 
 function OptionOrderPanel({
   draft,
+  setDraft,
+  chain,
+  base,
+  expiries,
+  expiry,
+  onExpiry,
   portfolio,
-  onSide,
   onAddToBuilder,
 }: {
   draft: Draft | null;
+  setDraft: (d: Draft) => void;
+  chain: ReturnType<import('../engine/exchange').Exchange['optionChain']> | null;
+  base: string;
+  expiries: number[];
+  expiry: number;
+  onExpiry: (e: number) => void;
   portfolio: PayoffLeg[];
-  onSide: (s: Side) => void;
   onAddToBuilder: (l: Omit<BuilderLeg, 'id'>) => void;
 }) {
   useTick();
   const ex = useSession((s) => s.ex)!;
-  const [type, setType] = useState<'Limit' | 'Market'>('Limit');
+  // тип ордера запоминается между сессиями
+  const [type, setType] = usePersistent<'Limit' | 'Market'>('bt-form-opt-type', 'Limit', ['Limit', 'Market']);
   const [price, setPrice] = useState<number | ''>('');
   const [qty, setQty] = useState<number | ''>('');
   const [withPortfolio, setWithPortfolio] = useState(false);
@@ -543,59 +609,132 @@ function OptionOrderPanel({
     if (q && draft) setQty((prev) => (prev ? prev : Number((optionQtyStep(q.underlyingPrice) * 10).toPrecision(6))));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft?.symbol, draft?.side]);
-  if (!draft || !q) return <Empty>Нажмите Bid (продать) или Ask (купить) в цепочке, чтобы создать ордер</Empty>;
+  if (!draft || !q || !chain) return <Empty>Выберите опцион в цепочке</Empty>;
   const inst = q.inst;
   const S = q.underlyingPrice;
   const step = optionQtyStep(S);
   const tick = optionTickSize(S);
-  const px = type === 'Market' ? (draft.side === 'Buy' ? q.ask : q.bid) : Number(price) || 0;
+  const side = draft.side;
+  const buy = side === 'Buy';
+  const px = type === 'Market' ? (buy ? q.ask : q.bid) : Number(price) || 0;
   const n = Number(qty) || 0;
   const fee = optionFee(ex.config.fees.optionTaker, ex.config.fees.optionFeeCap, S, px, n);
-  const margin = draft.side === 'Sell' ? shortOptionMargin(ex.config.options, inst, S, q.mark) : null;
+  const margin = !buy ? shortOptionMargin(ex.config.options, inst, S, q.mark) : null;
   const avail = ex.available(ex.main);
-  const submit = () => {
+  const kd = exactDecimals(inst.strike);
+  const strikes = chain.rows.map((r) => r.strike);
+  const si = strikes.indexOf(inst.strike);
+  const pick = (patch: { type?: 'C' | 'P'; strike?: number; side?: Side }) =>
+    setDraft({ symbol: optionSymbol(base, inst.expiry, patch.strike ?? inst.strike, patch.type ?? inst.type), side: patch.side ?? side });
+  const moneyness = (k: number, t: 'C' | 'P') => {
+    const rel = k / S - 1;
+    if (Math.abs(rel) < 0.005) return 'ATM';
+    const itm = t === 'C' ? k < S : k > S;
+    return `${itm ? 'ITM' : 'OTM'} ${rel > 0 ? '+' : ''}${(rel * 100).toFixed(1)}%`;
+  };
+  const submit = (s2: Side) => {
+    if (!n) return toast('warn', 'Укажите количество');
+    if (type === 'Limit' && !price) return toast('warn', 'Укажите цену');
     const o = ex.placeOrder({
       category: 'option',
       symbol: draft.symbol,
-      side: draft.side,
+      side: s2,
       orderType: type,
       price: type === 'Limit' ? Number(price) : undefined,
       qty: n,
     });
-    if (o.status === 'New') toast('info', `Лимит-ордер ${draft.side === 'Buy' ? 'покупка' : 'продажа'} ${draft.symbol}`, `${n} по ${price}`);
+    if (o.status === 'New') toast('info', `Лимит-ордер: ${s2 === 'Buy' ? 'покупка' : 'продажа'} ${draft.symbol}`, `${n} по ${price}. Исполнится, когда рыночная цена дойдёт до лимита.`);
+    else if (o.status === 'Rejected') toast('error', 'Ордер отклонён', o.rejectReason);
     bump(true);
   };
   const g = q.greeks;
   const be = inst.type === 'C' ? inst.strike + px : inst.strike - px;
+  const premium = px * n;
+  const right = inst.type === 'C' ? 'купить' : 'продать';
+  const date = fmtShortDate(inst.expiry);
+  const beTxt = fmtNum(be, autoDecimals(be));
+  const explain = buy
+    ? `Вы покупаете право ${right} ${fmtNum(n, 4)} ${base} по ${fmtNum(inst.strike, kd)} на экспирации ${date}. Платите премию ${fmtUsd(premium + fee)} USDT (с комиссией) — это максимальный возможный убыток. Прибыль, если ${base} на экспирации будет ${inst.type === 'C' ? 'выше' : 'ниже'} ${beTxt}.`
+    : `Вы продаёте ${inst.type === 'C' ? 'колл' : 'пут'} и сразу получаете премию ${fmtUsd(Math.max(0, premium - fee))} USDT — это максимальная прибыль, если ${base} на экспирации будет ${inst.type === 'C' ? 'ниже' : 'выше'} ${fmtNum(inst.strike, kd)}. Убыток, если цена уйдёт ${inst.type === 'C' ? 'выше' : 'ниже'} ${beTxt}${inst.type === 'C' ? ' — он не ограничен' : ''}. Под позицию блокируется маржа.`;
+  const sideBtn = (s2: Side) => {
+    const p2 = s2 === 'Buy' ? q.ask : q.bid;
+    const active = side === s2;
+    return (
+      <button
+        type="button"
+        onClick={() => pick({ side: s2 })}
+        disabled={p2 <= 0}
+        className={cx(
+          'rounded-md border px-2 py-1.5 text-left transition-colors disabled:opacity-40',
+          active ? (s2 === 'Buy' ? 'border-up bg-up/15' : 'border-down bg-down/15') : 'border-line2 hover:border-dim',
+        )}
+      >
+        <div className={cx('font-semibold', s2 === 'Buy' ? 'text-up' : 'text-down')}>{s2 === 'Buy' ? 'Купить' : 'Продать'}</div>
+        <div className="num text-[12px]">
+          {fmtNum(p2, 4)} <span className="text-[10px] text-muted">{s2 === 'Buy' ? 'по Ask' : 'по Bid'}</span>
+        </div>
+      </button>
+    );
+  };
   return (
-    <div className="p-3 flex flex-col gap-3">
+    <div className="p-3 flex flex-col gap-2.5">
       <div>
-        <div className="font-bold text-[14px]">{draft.symbol}</div>
+        <div className="font-bold text-[14px] truncate" title={draft.symbol}>
+          {draft.symbol}
+        </div>
         <div className="text-[11px] text-muted">
-          {inst.type === 'C' ? 'Колл' : 'Пут'} · страйк {fmtNum(inst.strike, autoDecimals(inst.strike))} · экспирация {fmtTime(inst.expiry)} UTC · европейский, расчёт в USDT
+          {inst.type === 'C' ? 'Колл' : 'Пут'} · страйк {fmtNum(inst.strike, kd)} · {moneyness(inst.strike, inst.type)} · до экспирации {dte(inst.expiry, ex.now)}
         </div>
       </div>
-      <Segmented
-        value={draft.side}
-        onChange={onSide}
-        options={[
-          { value: 'Buy', label: 'Купить', className: '!bg-up !text-white' },
-          { value: 'Sell', label: 'Продать', className: '!bg-down !text-white' },
-        ]}
-      />
-      <div className="grid grid-cols-3 gap-2 text-center text-[11px]">
-        <div className="bg-panel2 rounded p-1.5">
-          <div className="text-muted">Bid</div>
-          <div className="num text-up">{fmtNum(q.bid, 4)}</div>
-        </div>
-        <div className="bg-panel2 rounded p-1.5">
-          <div className="text-muted">Mark</div>
-          <div className="num">{fmtNum(q.mark, 4)}</div>
-        </div>
-        <div className="bg-panel2 rounded p-1.5">
-          <div className="text-muted">Ask</div>
-          <div className="num text-down">{fmtNum(q.ask, 4)}</div>
-        </div>
+      <div className="grid grid-cols-2 gap-1.5">
+        {(['C', 'P'] as const).map((t) => (
+          <button
+            key={t}
+            type="button"
+            onClick={() => pick({ type: t })}
+            className={cx('rounded-md border px-2 py-1.5 text-left', inst.type === t ? 'border-brand bg-brand/10' : 'border-line2 hover:border-dim')}
+          >
+            <div className="font-semibold">{t === 'C' ? 'Колл ▲' : 'Пут ▼'}</div>
+            <div className="text-[10px] text-muted">{t === 'C' ? 'покупка — ставка на рост' : 'покупка — ставка на падение'}</div>
+          </button>
+        ))}
+      </div>
+      <label className="field">
+        <span className="lbl">Экспирация</span>
+        <select value={expiry} onChange={(e) => onExpiry(Number(e.target.value))}>
+          {expiries.map((e) => (
+            <option key={e} value={e}>
+              {fmtShortDate(e)} · {dte(e, ex.now)}
+            </option>
+          ))}
+        </select>
+      </label>
+      <div className="flex gap-1">
+        <button className="btn h-8 w-8 p-0" disabled={si <= 0} onClick={() => pick({ strike: strikes[si - 1] })} title="Страйк ниже">
+          ◀
+        </button>
+        <label className="field flex-1">
+          <span className="lbl">Страйк</span>
+          <select value={inst.strike} onChange={(e) => pick({ strike: Number(e.target.value) })}>
+            {strikes.map((k) => (
+              <option key={k} value={k}>
+                {fmtNum(k, exactDecimals(k))} · {moneyness(k, inst.type)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button className="btn h-8 w-8 p-0" disabled={si < 0 || si >= strikes.length - 1} onClick={() => pick({ strike: strikes[si + 1] })} title="Страйк выше">
+          ▶
+        </button>
+      </div>
+      <div className="grid grid-cols-2 gap-1.5">
+        {sideBtn('Buy')}
+        {sideBtn('Sell')}
+      </div>
+      <div className="flex items-center justify-between text-[10px] text-muted -mt-1">
+        <span>Mark {fmtNum(q.mark, 4)}</span>
+        <span>IV {(q.iv * 100).toFixed(1)}%</span>
+        <span>Δ {fmtNum(g.delta, 3)}</span>
       </div>
       <Segmented
         size="sm"
@@ -606,23 +745,51 @@ function OptionOrderPanel({
           { value: 'Market', label: 'Рыночный' },
         ]}
       />
-      {type === 'Limit' && <NumInput label="Цена" value={price} onChange={setPrice} step={tick} suffix="USDT" />}
-      <NumInput label="Кол-во" value={qty} onChange={setQty} step={step} suffix={inst.base} />
+      {type === 'Limit' && (
+        <div className="flex flex-col gap-1">
+          <NumInput label="Цена" value={price} onChange={setPrice} step={tick} suffix="USDT" />
+          <div className="flex gap-1 text-[10px]">
+            <button className="chip flex-1 border border-line2" onClick={() => setPrice(buy ? q.ask : q.bid)} title="Исполнится сразу">
+              {buy ? 'Ask' : 'Bid'} {fmtNum(buy ? q.ask : q.bid, 4)}
+            </button>
+            <button className="chip flex-1 border border-line2" onClick={() => setPrice(Number(roundStep(q.mark, tick)))} title="Ждать исполнения по справедливой цене">
+              Mark {fmtNum(q.mark, 4)}
+            </button>
+          </div>
+        </div>
+      )}
+      <div className="flex flex-col gap-1">
+        <NumInput label="Кол-во" value={qty} onChange={setQty} step={step} suffix={inst.base} />
+        <div className="flex gap-1">
+          {[1, 5, 10, 50, 100].map((k) => {
+            const v = Number((step * k).toPrecision(6));
+            return (
+              <button key={k} className={cx('chip flex-1 border border-line2 !px-0', n === v && 'active')} onClick={() => setQty(v)}>
+                {v}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      <div className={cx('rounded-md p-2 text-[11px] leading-relaxed border', buy ? 'border-up/30 bg-up/5' : 'border-down/30 bg-down/5')}>{explain}</div>
       <div className="text-[11px] flex flex-col">
-        <Row label={draft.side === 'Buy' ? 'Премия к оплате' : 'Премия к получению'} value={`${fmtUsd(px * n, 4)} USDT`} />
+        <Row label={buy ? 'Премия к оплате' : 'Премия к получению'} value={`${fmtUsd(premium, 4)} USDT`} />
         <Row label="Комиссия" value={`${fmtNum(fee, 4)} USDT`} />
         {margin && <Row label="Маржа шорта (IM)" value={`${fmtUsd(margin.im * n)} USDT`} />}
+        <Row label="Безубыточность" value={beTxt} />
         <Row label="Доступно" value={`${fmtUsd(avail)} USDT`} />
-        <Row label="Безубыточность" value={fmtNum(be, autoDecimals(be))} />
-        <Row label="IV / мин. шаг" value={`${(q.iv * 100).toFixed(1)}% / ${step}`} />
       </div>
+      <button className={cx('btn h-10', buy ? 'btn-up' : 'btn-down')} onClick={() => submit(side)}>
+        {buy ? 'Купить' : 'Продать'} {fmtNum(n, 4)} {inst.type === 'C' ? 'колл' : 'пут'} {fmtNum(inst.strike, kd)}
+        {type === 'Market' ? ` за ~${fmtUsd(premium)} USDT` : ` по ${price}`}
+      </button>
       <OrderPreview
         leg={{
           type: inst.type,
           strike: inst.strike,
-          qty: (draft.side === 'Buy' ? 1 : -1) * n,
+          qty: (buy ? 1 : -1) * n,
           // премия + комиссия на контракт: для лонга дороже, для шорта меньше получаем
-          entry: n > 0 ? px + ((draft.side === 'Buy' ? 1 : -1) * fee) / n : px,
+          entry: n > 0 ? px + ((buy ? 1 : -1) * fee) / n : px,
           valueNow: (x: number) => ex.optionQuote(draft.symbol, x)?.mark ?? 0,
         }}
         portfolio={withPortfolio ? portfolio : []}
@@ -643,20 +810,20 @@ function OptionOrderPanel({
         ].map(([l, v, d]) => (
           <div key={l as string} className="bg-panel2 rounded p-1">
             <div className="text-muted">{l}</div>
-            <div className="num">{fmtNum((v as number) * n * (draft.side === 'Buy' ? 1 : -1), d as number)}</div>
+            <div className="num">{fmtNum((v as number) * n * (buy ? 1 : -1), d as number)}</div>
           </div>
         ))}
       </div>
-      <button className={cx('btn h-10', draft.side === 'Buy' ? 'btn-up' : 'btn-down')} onClick={submit}>
-        {draft.side === 'Buy' ? 'Купить' : 'Продать'} {inst.type === 'C' ? 'колл' : 'пут'}
-      </button>
-      <button className="btn btn-ghost btn-sm" onClick={() => onAddToBuilder({ side: draft.side, type: inst.type, strike: inst.strike, qty: n || step })}>
-        + Добавить ногу в конструктор
+      <button className="btn btn-ghost btn-sm" onClick={() => onAddToBuilder({ side, type: inst.type, strike: inst.strike, qty: n || step })}>
+        + Добавить ногу в конструктор стратегий
       </button>
     </div>
   );
 }
 
+function roundStep(v: number, step: number) {
+  return (Math.round(v / step) * step).toFixed(Math.max(0, -Math.floor(Math.log10(step))));
+}
 
 function OptionOrders() {
   const ex = useSession((s) => s.ex)!;

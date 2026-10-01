@@ -32,6 +32,7 @@ import type {
   Order,
   PlaceOrderRequest,
   Position,
+  PriceAlert,
   SessionConfig,
   Side,
 } from './types';
@@ -62,6 +63,8 @@ export interface ExchangeState {
   dd: { peakMain: number; maxDdMain: number; peakTotal: number; maxDdTotal: number };
   prices: Record<string, number>;
   finished: boolean;
+  /** ценовые алерты (в старых сохранениях поля нет) */
+  alerts?: PriceAlert[];
 }
 
 export interface AccountSummary {
@@ -169,6 +172,7 @@ export class Exchange {
       dd: { peakMain: config.initialBalance, maxDdMain: 0, peakTotal: config.initialBalance, maxDdTotal: 0 },
       prices: {},
       finished: false,
+      alerts: [],
     };
     const ex = new Exchange(market, state);
     ex.syncPrices();
@@ -574,6 +578,7 @@ export class Exchange {
 
     if (!this.market.has(o.symbol)) return this.reject(o, `Нет данных по ${o.symbol}`);
     const spec = getAsset(o.symbol);
+    if (o.category === 'linear' && spec.spotOnly) return this.reject(o, `${spec.base} торгуется только на споте (нет перпетуала)`);
     const last = this.price(o.symbol);
     if (!Number.isFinite(last)) return this.reject(o, 'Нет цены');
     const qtyStep = qtyStepFor(o.symbol, o.category);
@@ -1313,6 +1318,7 @@ export class Exchange {
   setLeverage(accountId: string, symbol: string, lev: number): string | null {
     const acc = this.account(accountId);
     const spec = getAsset(symbol);
+    if (spec.spotOnly) return `${spec.base} торгуется только на споте — плечо недоступно`;
     lev = Math.round(lev * 100) / 100;
     if (!(lev >= 1 && lev <= spec.maxLeverage)) return `Плечо должно быть от 1 до ${spec.maxLeverage}`;
     const pos = acc.positions[symbol];
@@ -1766,6 +1772,8 @@ export class Exchange {
       }
       // движение цены
       for (const [sym, i] of bars) this.processBar(sym, i);
+      // ценовые алерты (по максимуму/минимуму бара)
+      if (st.alerts?.length) for (const [sym, i] of bars) this.checkAlerts(sym, this.market.series.get(sym)!.h[i], this.market.series.get(sym)!.l[i]);
       // опционы: лимитные ордера и контроль маржи на закрытии
       this.matchOptionOrders();
       this.checkCrossAtClose();
@@ -1806,13 +1814,68 @@ export class Exchange {
   }
 
   /** Перемотка вперёд до индекса бара (с полной обработкой событий). */
-  runTo(cursor: number, budgetMs = Infinity): boolean {
+  runTo(cursor: number, budgetMs = Infinity, stopOnAlert = false): boolean {
     const t0 = performance.now();
+    this.alertHit = false;
     while (this.state.cursor < cursor && !this.state.finished) {
       this.step();
+      if (stopOnAlert && this.alertHit) return false;
       if (performance.now() - t0 > budgetMs) return false;
     }
     return true;
+  }
+
+  /* ───────────────────────── ценовые алерты ───────────────────────── */
+
+  /** Сработал ли алерт с момента последнего runTo (для остановки перемотки). */
+  alertHit = false;
+
+  addAlert(symbol: string, price: number, note?: string): PriceAlert | null {
+    const last = this.price(symbol);
+    if (!Number.isFinite(last) || !(price > 0)) return null;
+    const a: PriceAlert = {
+      id: this.nextId('al'),
+      symbol,
+      price: roundToStep(price, getAsset(symbol).tickSize),
+      dir: price >= last ? 'up' : 'down',
+      note,
+      createdTime: this.eventTime(),
+    };
+    (this.state.alerts ??= []).push(a);
+    return a;
+  }
+
+  moveAlert(id: string, price: number) {
+    const a = this.state.alerts?.find((x) => x.id === id);
+    if (!a) return;
+    const last = this.price(a.symbol);
+    a.price = roundToStep(price, getAsset(a.symbol).tickSize);
+    a.dir = a.price >= last ? 'up' : 'down';
+  }
+
+  removeAlert(id: string) {
+    if (this.state.alerts) this.state.alerts = this.state.alerts.filter((a) => a.id !== id);
+  }
+
+  alerts(symbol?: string): PriceAlert[] {
+    return (this.state.alerts ?? []).filter((a) => !symbol || a.symbol === symbol);
+  }
+
+  private checkAlerts(symbol: string, h: number, l: number) {
+    const list = this.state.alerts;
+    if (!list?.length) return;
+    for (const a of list.slice()) {
+      if (a.symbol !== symbol) continue;
+      if ((a.dir === 'up' && h >= a.price) || (a.dir === 'down' && l <= a.price)) {
+        this.state.alerts = this.state.alerts!.filter((x) => x.id !== a.id);
+        this.alertHit = true;
+        // алерты важны и при «тихой» перемотке
+        const quiet = this.quiet;
+        this.quiet = false;
+        this.emit({ type: 'alert', alert: a, time: this.barTime });
+        this.quiet = quiet;
+      }
+    }
   }
 
   /* ───────────────────────── капитал и просадка ───────────────────────── */

@@ -6,6 +6,8 @@ import { useSession, useTick } from '../../store/session';
 import { fmtCountdown, fmtDuration, fmtNum, fmtPct, fmtPrice, fmtQty, fmtTime, fmtUsd, pnlClass } from '../../lib/format';
 import { Badge, cx, Empty, Modal, Row, Tabs } from '../ui';
 import { EquityChart } from '../EquityChart';
+import { PriceChart } from '../chart/PriceChart';
+import { botCategory, liveOverlay } from './botChart';
 
 const REASON: Record<RebalanceLogEntry['reason'], string> = {
   start: 'Открытие',
@@ -195,7 +197,7 @@ export function RebalanceTable({ bot }: { bot: AnyBot }) {
   );
 }
 
-type Tab = 'overview' | 'rebalances' | 'trades' | 'orders';
+type Tab = 'overview' | 'chart' | 'rebalances' | 'trades' | 'orders';
 
 /** Окно с подробностями бота: капитал, позиции, журнал ребалансировок, сделки, ордера. */
 export function BotDetailsModal({ bot, onClose }: { bot: AnyBot | null; onClose: () => void }) {
@@ -210,7 +212,10 @@ export function BotDetailsModal({ bot, onClose }: { bot: AnyBot | null; onClose:
   const execs = ex.state.executions.filter((e) => e.accountId === acc.id && e.execType !== 'Funding').slice(-500).reverse();
   const orders = ex.activeOrders(acc.id);
   const positions = Object.values(acc.positions);
-  const tabs: { value: Tab; label: string }[] = [{ value: 'overview', label: 'Обзор' }];
+  const tabs: { value: Tab; label: string }[] = [
+    { value: 'overview', label: 'Обзор' },
+    { value: 'chart', label: 'На графике' },
+  ];
   if (bot.type === 'futuresCombo') tabs.push({ value: 'rebalances', label: `Ребалансировки (${bot.stats.rebalances})` });
   tabs.push({ value: 'trades', label: `Сделки (${execs.length})` }, { value: 'orders', label: `Ордера (${orders.length})` });
   return (
@@ -326,6 +331,7 @@ export function BotDetailsModal({ bot, onClose }: { bot: AnyBot | null; onClose:
             ) : (
               <Empty>Сделок пока нет</Empty>
             ))}
+          {tab === 'chart' && <BotHistoryChart bot={bot} />}
           {tab === 'orders' &&
             (orders.length ? (
               <table className="tbl">
@@ -357,5 +363,48 @@ export function BotDetailsModal({ bot, onClose }: { bot: AnyBot | null; onClose:
         </div>
       </div>
     </Modal>
+  );
+}
+
+/** Сделки бота на графике цены (в т.ч. для остановленных ботов) + уровни сетки. */
+function BotHistoryChart({ bot }: { bot: AnyBot }) {
+  const ex = useSession((s) => s.ex)!;
+  const chartTf = useSession((s) => s.chartTf);
+  const set = useSession((s) => s.set);
+  const [sym, setSym] = useState(bot.symbols[0]);
+  const symbol = bot.symbols.includes(sym) ? sym : bot.symbols[0];
+  if (!symbol || !ex.market.has(symbol)) return <Empty>Нет данных для графика</Empty>;
+  const ov = liveOverlay(ex, bot, symbol);
+  const active = bot.status === 'running' || bot.status === 'waiting';
+  return (
+    <div className="flex flex-col gap-2">
+      {bot.symbols.length > 1 && (
+        <div className="flex gap-1">
+          {bot.symbols.map((s2) => (
+            <button key={s2} className={cx('chip', s2 === symbol && 'active')} onClick={() => setSym(s2)}>
+              {s2}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="h-[420px]">
+        <PriceChart
+          symbol={symbol}
+          tf={chartTf}
+          onTfChange={(t) => set({ chartTf: t })}
+          category={botCategory(bot)}
+          accountId={bot.accountId}
+          readOnly
+          orderLines={!(bot.type === 'spotGrid' || bot.type === 'futuresGrid')}
+          otherBots={false}
+          extraLines={ov.lines}
+          fitPrices={ov.fit}
+          compact
+        />
+      </div>
+      <div className="text-[11px] text-dim">
+        Стрелки — сделки бота{active ? '' : ' (бот остановлен: уровни сетки показаны по его параметрам)'}. Прокрутите график влево, чтобы увидеть начало работы.
+      </div>
+    </div>
   );
 }

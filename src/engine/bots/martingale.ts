@@ -72,6 +72,7 @@ function armNext(ex: Exchange, bot: BotState<'martingale'>) {
 export const martingaleLogic: BotLogic<'martingale'> = {
   validate(ex, p: MartingaleParams, investment) {
     if (!ex.market.has(p.symbol)) return `Нет данных по ${p.symbol}`;
+    if (getAsset(p.symbol).spotOnly) return `${p.symbol} торгуется только на споте — мартингейл работает на перпетуалах`;
     const max = getAsset(p.symbol).maxLeverage;
     if (!(p.leverage >= 1 && p.leverage <= max)) return `Плечо: от 1 до ${max}`;
     if (!(p.stepPct > 0) || !(p.tpPct > 0)) return 'Шаг и TP должны быть > 0';

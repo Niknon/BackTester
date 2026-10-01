@@ -197,3 +197,51 @@ describe('Сериализация', () => {
     expect(ex2.equity(ex2.main)).toBeCloseTo(ex.equity(ex.main), 8);
   });
 });
+
+describe('Токенизированные акции (xStocks)', () => {
+  it('торгуются только на споте: перпетуал и плечо недоступны', () => {
+    const ex = mkExchange({ AAPLXUSDT: [[330, 331, 329, 330], ...flat(330, 3)] });
+    const lin = ex.placeOrder({ category: 'linear', symbol: 'AAPLXUSDT', side: 'Buy', orderType: 'Market', qty: 1 });
+    expect(lin.status).toBe('Rejected');
+    expect(lin.rejectReason).toMatch(/только на споте/);
+    expect(ex.setLeverage(MAIN, 'AAPLXUSDT', 5)).toMatch(/только на споте/);
+    const b = ex.placeOrder({ category: 'spot', symbol: 'AAPLXUSDT', side: 'Buy', orderType: 'Market', qty: 1.5 });
+    expect(b.status).toBe('Filled');
+    expect(ex.main.spot.AAPLX).toBe(1.5);
+    // дробное количество с шагом 0.001
+    const s = ex.placeOrder({ category: 'spot', symbol: 'AAPLXUSDT', side: 'Sell', orderType: 'Market', qty: 0.255 });
+    expect(s.status).toBe('Filled');
+    close(ex.main.spot.AAPLX, 1.245);
+    close(ex.equity(ex.main), 10_000 - 1.5 * 330 * 0.001 - 0.255 * 330 * 0.001, 1e-6);
+  });
+
+  it('фьючерсные боты отклоняют спотовые инструменты', async () => {
+    const { BOT_LOGIC: botLogic } = await import('../src/engine/bots/registry');
+    const ex = mkExchange({ TSLAXUSDT: flat(358, 5) });
+    expect(botLogic.futuresGrid.validate(ex, { symbol: 'TSLAXUSDT', direction: 'long', lower: 300, upper: 400, grids: 10, mode: 'arithmetic', leverage: 2, closeOnStop: true }, 1000)).toMatch(/только на споте/);
+    expect(botLogic.spotGrid.validate(ex, { symbol: 'TSLAXUSDT', lower: 300, upper: 400, grids: 10, mode: 'arithmetic', sellOnStop: true }, 1000)).toBeNull();
+  });
+});
+
+describe('Ценовые алерты', () => {
+  it('срабатывают по high/low бара и удаляются; runTo останавливается', () => {
+    const ex = mkExchange({ BTCUSDT: [[100, 101, 99, 100], [100, 104, 99, 103], [103, 103, 95, 96], ...flat(96, 3)] });
+    const hits: number[] = [];
+    ex.on((e) => {
+      if (e.type === 'alert') hits.push(e.alert.price);
+    });
+    const up = ex.addAlert('BTCUSDT', 103.5)!;
+    const down = ex.addAlert('BTCUSDT', 97)!;
+    expect(up.dir).toBe('up');
+    expect(down.dir).toBe('down');
+    ex.step(); // high 101 — ничего
+    expect(hits).toEqual([]);
+    const done = ex.runTo(10, Infinity, true); // бар 2: high 104 → алерт вверх, остановка
+    expect(done).toBe(false);
+    expect(hits).toEqual([103.5]);
+    expect(ex.state.cursor).toBe(2);
+    ex.step(); // low 95 → алерт вниз
+    expect(hits).toEqual([103.5, 97]);
+    expect(ex.alerts().length).toBe(0);
+  });
+});

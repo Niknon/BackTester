@@ -3,11 +3,26 @@
  * (по состоянию на сентябрь 2026):
  *  - крипто-опционы: BTC, ETH, SOL, XRP, DOGE, MNT, HYPE;
  *  - Perp Options (опционы на TradFi-перпетуалы): SPCX, NVDA, TSLA, QQQ, SOXL, MU, SKHY, SNDK.
+ * Плюс TradFi-раздел спота Bybit: токенизированные акции/ETF xStocks (AAPLX, TSLAX, NVDAX…)
+ * и токены золота (XAUT, PAXG) — торгуются только на споте.
  * Спецификации (тик, шаг лота, макс. плечо) — ориентировочные; при доступности API Bybit
  * они уточняются в рантайме (см. syncInstrumentsFromBybit в providers/bybit.ts).
  */
 
-export type AssetGroup = 'crypto' | 'tradfi';
+/**
+ * crypto — крипто-перпетуалы (и спот);
+ * tradfi — TradFi USDT-перпетуалы Bybit на акции/ETF;
+ * xstock — токенизированные акции xStocks (только спот, 24/7);
+ * commodity — токены золота (только спот).
+ */
+export type AssetGroup = 'crypto' | 'tradfi' | 'xstock' | 'commodity';
+
+export const GROUP_LABEL: Record<AssetGroup, string> = {
+  crypto: 'Крипто',
+  tradfi: 'TradFi-перпетуалы',
+  xstock: 'xStocks',
+  commodity: 'Золото',
+};
 
 export interface AssetSpec {
   symbol: string; // тикер USDT-перпетуала Bybit, напр. BTCUSDT
@@ -30,6 +45,12 @@ export interface AssetSpec {
   binance?: string | null;
   /** дата листинга на Bybit (приблизительно), мс */
   listed?: number;
+  /** торгуется только на споте (нет USDT-перпетуала) */
+  spotOnly?: boolean;
+  /** категория Bybit API для свечей (по умолчанию linear) */
+  bybitCategory?: 'linear' | 'spot';
+  /** тикер базового актива на фондовом рынке (для xStocks) */
+  underlying?: string;
 }
 
 const C = (
@@ -82,6 +103,48 @@ const T = (
   binance: null,
 });
 
+/**
+ * xStock: токенизированная акция/ETF (Backed Finance) на споте Bybit, пара `${TICKER}XUSDT`.
+ * Фолбэк-источник цены — USDT-перпетуал на ту же акцию на OKX (листинг с ~марта 2026).
+ */
+const X = (ticker: string, name: string, refPrice: number, refVol: number, okx: string | null = `${ticker}-USDT-SWAP`): AssetSpec => ({
+  symbol: `${ticker}XUSDT`,
+  base: `${ticker}X`,
+  name,
+  group: 'xstock',
+  hasOptions: false,
+  tickSize: 0.01,
+  qtyStep: 0.001,
+  minQty: 0.001,
+  maxLeverage: 1,
+  refPrice,
+  refVol,
+  okx,
+  binance: null,
+  spotOnly: true,
+  bybitCategory: 'spot',
+  underlying: ticker,
+});
+
+/** Токен золота на споте (1 токен ≈ 1 тройская унция). */
+const G = (base: string, name: string, okx: string): AssetSpec => ({
+  symbol: `${base}USDT`,
+  base,
+  name,
+  group: 'commodity',
+  hasOptions: false,
+  tickSize: 0.1,
+  qtyStep: 0.0001,
+  minQty: 0.0001,
+  maxLeverage: 1,
+  refPrice: 4180,
+  refVol: 0.18,
+  okx,
+  binance: null,
+  spotOnly: true,
+  bybitCategory: 'spot',
+});
+
 export const ASSETS: AssetSpec[] = [
   // ── Базовые активы опционов Bybit (крипто) ──
   C('BTC', 'Bitcoin', true, 0.1, 0.001, 100, 83000, 0.5),
@@ -126,6 +189,47 @@ export const ASSETS: AssetSpec[] = [
     okxMult: 1000,
     binance: '1000PEPEUSDT',
   }),
+  // ── TradFi на споте: токенизированные акции и ETF (xStocks) ──
+  X('AAPL', 'Apple', 330, 0.3),
+  X('MSFT', 'Microsoft', 516, 0.28),
+  X('NVDA', 'NVIDIA', 232, 0.45),
+  X('GOOGL', 'Alphabet', 339, 0.32),
+  X('AMZN', 'Amazon', 249, 0.35),
+  X('META', 'Meta Platforms', 727, 0.38),
+  X('TSLA', 'Tesla', 358, 0.6),
+  X('NFLX', 'Netflix', 68, 0.4),
+  X('AMD', 'AMD', 618, 0.55),
+  X('AVGO', 'Broadcom', 346, 0.45),
+  X('ORCL', 'Oracle', 138, 0.45),
+  X('PLTR', 'Palantir', 191, 0.65),
+  X('COIN', 'Coinbase', 190, 0.7),
+  X('HOOD', 'Robinhood', 112, 0.75),
+  X('MSTR', 'Strategy (MicroStrategy)', 161, 0.8),
+  X('CRCL', 'Circle', 83, 0.9),
+  X('INTC', 'Intel', 120, 0.5),
+  X('MRVL', 'Marvell', 268, 0.6),
+  X('CRM', 'Salesforce', 237, 0.35),
+  X('ADBE', 'Adobe', 242, 0.35),
+  X('CSCO', 'Cisco', 109, 0.25),
+  X('IBM', 'IBM', 226, 0.28),
+  X('LLY', 'Eli Lilly', 1156, 0.35),
+  X('UNH', 'UnitedHealth', 366, 0.35),
+  X('JNJ', 'Johnson & Johnson', 258, 0.18),
+  X('MRK', 'Merck', 144, 0.25),
+  X('KO', 'Coca-Cola', 86, 0.15),
+  X('WMT', 'Walmart', 105, 0.2),
+  X('XOM', 'Exxon Mobil', 164, 0.25),
+  X('GME', 'GameStop', 24, 0.8),
+  X('MCD', "McDonald's", 300, 0.18, null),
+  X('JPM', 'JPMorgan Chase', 300, 0.22, null),
+  X('SPY', 'SPDR S&P 500 ETF', 765, 0.16),
+  X('QQQ', 'Invesco QQQ (Nasdaq-100)', 744, 0.2),
+  X('IWM', 'iShares Russell 2000 ETF', 279, 0.22),
+  X('TQQQ', 'ProShares UltraPro QQQ (3x)', 79, 0.6),
+  X('GLD', 'SPDR Gold Shares', 385, 0.18, null),
+  // ── Токены золота (спот) ──
+  G('XAUT', 'Tether Gold', 'XAUT-USDT'),
+  G('PAXG', 'PAX Gold', 'PAXG-USDT'),
 ];
 
 /** Базовые активы опционов Bybit — обязательный список. */
@@ -178,6 +282,19 @@ export function getAsset(symbol: string): AssetSpec {
 
 export function hasAsset(symbol: string) {
   return BY_SYMBOL.has(symbol);
+}
+
+/** Есть ли у инструмента USDT-перпетуал (деривативы, фьючерсные боты, опционы). */
+export function isPerp(symbol: string) {
+  return !getAsset(symbol).spotOnly;
+}
+
+/** Подпись типа инструмента для UI. */
+export function kindLabel(spec: AssetSpec) {
+  if (spec.group === 'xstock') return 'Токенизированная акция · спот';
+  if (spec.group === 'commodity') return 'Токен золота · спот';
+  if (spec.group === 'tradfi') return 'TradFi перпетуал';
+  return 'USDT-перпетуал';
 }
 
 /** Шаг количества для спота (на Bybit он значительно мельче, чем у перпетуалов). */

@@ -1,5 +1,6 @@
 import { useRef } from 'react';
 import { DAY } from '../../data/intervals';
+import { getAsset } from '../../data/assets';
 import { lowerBound } from '../../data/types';
 import { useSession, useTick } from '../../store/session';
 import { fmtCountdown, fmtNum, fmtPct, fmtPrice } from '../../lib/format';
@@ -37,7 +38,7 @@ export function TickerBar({ symbol, onSymbol, spot }: { symbol: string; onSymbol
   const rate = lf?.rate ?? ex.config.defaultFundingRate;
   return (
     <div className="flex items-center gap-6 px-3 h-14 bg-panel rounded-lg shrink-0 overflow-x-auto">
-      <SymbolSelector symbol={symbol} onSelect={onSymbol} />
+      <SymbolSelector symbol={symbol} onSelect={onSymbol} spot={spot} />
       <div className="flex flex-col leading-tight">
         <span className={cx('num text-[18px] font-bold', ch >= 0 ? 'text-up' : 'text-down')}>{fmtPrice(px, symbol)}</span>
         <span className={cx('text-[10px] num', dir === 'up' ? 'text-up' : dir === 'down' ? 'text-down' : 'text-muted')}>{spot ? 'Спот' : 'Mark ≈ Last'}</span>
@@ -47,7 +48,7 @@ export function TickerBar({ symbol, onSymbol, spot }: { symbol: string; onSymbol
       <Item label="Мин. 24ч" value={fmtPrice(lo, symbol)} />
       <Item label="Объём 24ч" value={fmtNum(vol, 2, { compact: true })} />
       <Item label="Оборот 24ч (USDT)" value={fmtNum(turnover, 2, { compact: true })} />
-      {!spot && (
+      {!spot && !getAsset(symbol).spotOnly && (
         <Item
           label="Funding / до выплаты"
           value={

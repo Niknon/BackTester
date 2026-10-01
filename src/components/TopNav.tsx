@@ -2,6 +2,7 @@ import { useSession, useTick, type Page } from '../store/session';
 import { saveSession } from '../store/actions';
 import { cx } from './ui';
 import { fmtUsd, pnlClass, fmtPct } from '../lib/format';
+import { PositionsButton } from './positions/AllPositions';
 
 const NAV: { page: Page; label: string }[] = [
   { page: 'markets', label: 'Рынки' },
@@ -73,6 +74,7 @@ export function TopNav() {
           </button>
         ))}
       <div className="ml-auto flex items-center gap-3">
+        {hasEx && <PositionsButton />}
         {hasEx && <EquityBadge />}
         {hasEx && (
           <button className="btn btn-ghost btn-sm" onClick={() => saveSession()} title={savedAt ? `Сохранено ${new Date(savedAt).toLocaleTimeString('ru-RU')}` : 'Сохранить сессию в браузере'}>

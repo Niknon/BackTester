@@ -25,6 +25,15 @@ export function fmtPrice(p: number | null | undefined, symbol?: string, d?: numb
   return fmtNum(p, dec);
 }
 
+/** Минимальное число знаков, достаточное для точного отображения значения (страйки и т.п.). */
+export function exactDecimals(v: number, max = 6): number {
+  for (let d = 0; d < max; d++) {
+    const k = v * 10 ** d;
+    if (Math.abs(k - Math.round(k)) < 1e-6 * Math.max(1, Math.abs(k))) return d;
+  }
+  return max;
+}
+
 export function autoDecimals(p: number): number {
   const a = Math.abs(p);
   if (a >= 1000) return 2;

@@ -200,3 +200,20 @@ describe('Бэктест бота в отдельном экземпляре', (
     expect(res.equity.length).toBeGreaterThan(10);
   });
 });
+
+describe('Грид: допустимость числа сеток', () => {
+  it('максимально допустимое число сеток проходит проверку и бот реально запускается', async () => {
+    const { maxFeasibleGrids } = await import('../src/engine/bots/grid');
+    const ex = mkExchange({ ETHUSDT: flat(2075, 10) });
+    const lower = 2018.62;
+    const upper = 2626.47;
+    const n = maxFeasibleGrids('ETHUSDT', lower, upper, 'geometric', 1000, 1, 0.01);
+    expect(n).toBeGreaterThan(10);
+    const ok = ex.createBot('futuresGrid', 'g', 1000, { symbol: 'ETHUSDT', direction: 'short', lower, upper, grids: n, mode: 'geometric', leverage: 1, closeOnStop: true });
+    expect(ok.error).toBeUndefined();
+    expect(ok.bot!.status).toBe('running');
+    // на одну сетку больше — отклоняется заранее, а не останавливается при запуске
+    const bad = ex.createBot('futuresGrid', 'g2', 1000, { symbol: 'ETHUSDT', direction: 'short', lower, upper, grids: n + 1, mode: 'geometric', leverage: 1, closeOnStop: true });
+    expect(bad.error).toMatch(/Слишком мало инвестиций/);
+  });
+});

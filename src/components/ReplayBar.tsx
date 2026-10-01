@@ -152,6 +152,9 @@ export function ReplayBar() {
           <Check checked={prefs.pauseOnLiquidation} onChange={(v) => setPrefs({ pauseOnLiquidation: v })}>
             Пауза при ликвидации
           </Check>
+          <Check checked={prefs.pauseOnAlert} onChange={(v) => setPrefs({ pauseOnAlert: v })}>
+            Пауза (и стоп перемотки) при срабатывании алерта
+          </Check>
           <Check checked={prefs.notifyRebalance} onChange={(v) => setPrefs({ notifyRebalance: v })}>
             Уведомления о ребалансировках ботов
           </Check>
@@ -159,7 +162,7 @@ export function ReplayBar() {
             Автосохранение раз в минуту
           </Check>
           <div className="text-[11px] text-dim pt-1 border-t border-line">
-            Горячие клавиши: <span className="kbd">Пробел</span> — старт/пауза, <span className="kbd">→</span> — бар, <span className="kbd">Shift+→</span> — свеча
+            Горячие клавиши: <span className="kbd">Пробел</span> — старт/пауза, <span className="kbd">→</span> — бар, <span className="kbd">Shift+→</span> — свеча, <span className="kbd">P</span> — все позиции. Правый клик по графику — алерт / цена в форму.
           </div>
         </div>
       </Dropdown>

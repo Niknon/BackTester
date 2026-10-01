@@ -168,6 +168,7 @@ export const comboLogic: BotLogic<'futuresCombo'> = {
       if (seen.has(leg.symbol)) return `${leg.symbol} указан дважды`;
       seen.add(leg.symbol);
       if (!ex.market.has(leg.symbol)) return `Нет данных по ${leg.symbol} — загрузите символ`;
+      if (getAsset(leg.symbol).spotOnly) return `${leg.symbol} торгуется только на споте — в комбо нужны перпетуалы`;
       if (!(leg.weight > 0)) return 'Вес каждой монеты должен быть > 0';
       const max = getAsset(leg.symbol).maxLeverage;
       if (p.leverage > max) return `Плечо ${p.leverage}x превышает максимум ${max}x для ${leg.symbol}`;

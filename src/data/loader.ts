@@ -7,6 +7,7 @@ import { bybitProvider } from './providers/bybit';
 import { okxProvider } from './providers/okx';
 import { binanceProvider } from './providers/binance';
 import { syntheticProvider } from './providers/synthetic';
+import { getAsset } from './assets';
 
 export const PROVIDERS: Record<ProviderId, DataProvider> = {
   bybit: bybitProvider,
@@ -18,7 +19,7 @@ export const PROVIDERS: Record<ProviderId, DataProvider> = {
 export const PROVIDER_LIST: { id: ProviderId; label: string; note: string }[] = [
   { id: 'bybit', label: 'Bybit', note: 'Основной источник: свечи и funding USDT-перпетуалов Bybit' },
   { id: 'okx', label: 'OKX', note: 'Фолбэк: те же активы (кроме MNT/TON), funding — только ~3 мес.' },
-  { id: 'binance', label: 'Binance Futures', note: 'Фолбэк: крипто-перпетуалы Binance' },
+  { id: 'binance', label: 'Binance Futures', note: 'Фолбэк: крипто-перпетуалы Binance (без TradFi и xStocks)' },
   { id: 'synthetic', label: 'Синтетика', note: 'Офлайн-генератор: для тестов логики без интернета' },
 ];
 
@@ -135,7 +136,8 @@ export async function loadFunding(
   signal?: AbortSignal,
 ): Promise<FundingPoint[]> {
   const p = PROVIDERS[provider];
-  if (!p.fetchFunding) return [];
+  // спотовые инструменты (xStocks, золото) — без funding
+  if (!p.fetchFunding || getAsset(symbol).spotOnly) return [];
   const key = `${provider}|${symbol}|${start}|${end}`;
   if (provider !== 'synthetic') {
     const cached = await idbGet<FundingPoint[]>('funding', key);

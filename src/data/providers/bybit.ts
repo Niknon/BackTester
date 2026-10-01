@@ -1,7 +1,7 @@
 import { apiGet, pool } from '../http';
 import { intervalDef } from '../intervals';
 import type { Candle, FundingPoint, IntervalKey } from '../types';
-import { ASSETS, BYBIT_OPTION_BASES, registerExtra, updateAssetSpec, type AssetSpec } from '../assets';
+import { ASSETS, BYBIT_OPTION_BASES, getAsset, registerExtra, updateAssetSpec, type AssetSpec } from '../assets';
 import type { DataProvider, FetchOpts } from './provider';
 
 const PROXY = '/proxy/bybit';
@@ -17,6 +17,7 @@ export const bybitProvider: DataProvider = {
   label: 'Bybit',
   async fetchKlines(symbol: string, interval: IntervalKey, start: number, end: number, opts: FetchOpts = {}) {
     const def = intervalDef(interval);
+    const category = getAsset(symbol).bybitCategory ?? 'linear';
     const span = 1000 * def.ms;
     const windows: [number, number][] = [];
     for (let s = start; s < end; s += span) windows.push([s, Math.min(end, s + span) - 1]);
@@ -29,7 +30,7 @@ export const bybitProvider: DataProvider = {
           PROXY,
           DIRECT,
           '/v5/market/kline',
-          { category: 'linear', symbol, interval: def.bybit, start: s, end: e, limit: 1000 },
+          { category, symbol, interval: def.bybit, start: s, end: e, limit: 1000 },
           opts.signal,
         );
         const list: string[][] = checkRet(json).list || [];
@@ -46,6 +47,7 @@ export const bybitProvider: DataProvider = {
 
   async fetchFunding(symbol: string, start: number, end: number, opts: FetchOpts = {}) {
     const out: FundingPoint[] = [];
+    if (getAsset(symbol).spotOnly) return out;
     let endTime = end;
     for (let guard = 0; guard < 2000; guard++) {
       const json = await apiGet(
@@ -96,6 +98,7 @@ export async function syncInstrumentsFromBybit(signal?: AbortSignal): Promise<nu
         listed: +it.launchTime,
       };
       const known = ASSETS.find((a) => a.symbol === it.symbol);
+      if (known?.spotOnly) continue;
       if (known) updateAssetSpec(it.symbol, patch);
       else
         registerExtra({
@@ -114,6 +117,53 @@ export async function syncInstrumentsFromBybit(signal?: AbortSignal): Promise<nu
     }
     cursor = res.nextPageCursor;
     if (!cursor) break;
+  }
+  return count;
+}
+
+/**
+ * Уточняет спецификации токенизированных акций (xStocks) и токенов золота по споту Bybit
+ * и добавляет новые xStocks, если биржа помечает их соответствующим типом.
+ */
+export async function syncSpotTradFiFromBybit(signal?: AbortSignal): Promise<number> {
+  const json = await apiGet(PROXY, DIRECT, '/v5/market/instruments-info', { category: 'spot', limit: 1000 }, signal);
+  const res = checkRet(json);
+  let count = 0;
+  for (const it of res.list || []) {
+    if (it.quoteCoin !== 'USDT' || it.status !== 'Trading') continue;
+    const patch: Partial<AssetSpec> = {
+      tickSize: +it.priceFilter?.tickSize || undefined,
+      qtyStep: +it.lotSizeFilter?.basePrecision || undefined,
+      minQty: +it.lotSizeFilter?.minOrderQty || undefined,
+    };
+    for (const k of Object.keys(patch) as (keyof AssetSpec)[]) if (patch[k] === undefined) delete patch[k];
+    const known = ASSETS.find((a) => a.symbol === it.symbol && a.spotOnly);
+    if (known) {
+      updateAssetSpec(it.symbol, patch);
+      count++;
+    } else if (/xstock/i.test(String(it.symbolType ?? '')) && /X$/.test(it.baseCoin)) {
+      const ticker = String(it.baseCoin).slice(0, -1);
+      registerExtra({
+        symbol: it.symbol,
+        base: it.baseCoin,
+        name: `${ticker} (xStock)`,
+        group: 'xstock',
+        hasOptions: false,
+        tickSize: 0.01,
+        qtyStep: 0.001,
+        minQty: 0.001,
+        maxLeverage: 1,
+        refPrice: 100,
+        refVol: 0.4,
+        okx: `${ticker}-USDT-SWAP`,
+        binance: null,
+        spotOnly: true,
+        bybitCategory: 'spot',
+        underlying: ticker,
+        ...patch,
+      });
+      count++;
+    }
   }
   return count;
 }

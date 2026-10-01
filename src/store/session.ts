@@ -47,6 +47,7 @@ export interface Prefs {
   speed: number;
   autosave: boolean;
   notifyRebalance: boolean;
+  pauseOnAlert: boolean;
 }
 
 export const DEFAULT_INDICATORS: IndicatorConfig[] = [
@@ -83,6 +84,7 @@ function loadPrefs(): Prefs {
     speed: 20,
     autosave: true,
     notifyRebalance: true,
+    pauseOnAlert: true,
   };
   try {
     const raw = localStorage.getItem(PREFS_KEY);
@@ -122,6 +124,10 @@ interface SessionState {
   savedAt: number | null;
   /** символы, которые догружаются прямо сейчас */
   loadingSymbols: string[];
+  /** открыта ли глобальная панель «Все позиции» */
+  positionsOpen: boolean;
+  /** бот, выбранный для просмотра на странице ботов */
+  focusBot: string | null;
   set: (p: Partial<SessionState>) => void;
   setPrefs: (p: Partial<Prefs>) => void;
 }
@@ -141,6 +147,8 @@ export const useSession = create<SessionState>((set, get) => ({
   prefs: loadPrefs(),
   savedAt: null,
   loadingSymbols: [],
+  positionsOpen: false,
+  focusBot: null,
   set: (p) => set(p),
   setPrefs: (p) => {
     const prefs = { ...get().prefs, ...p };

@@ -1,4 +1,5 @@
-import { getAsset, roundToStep } from '../../data/assets';
+import { getAsset, roundToStep, spotQtyStep } from '../../data/assets';
+import { maxFeasibleGrids } from './grid';
 import { DAY } from '../../data/intervals';
 import type { Exchange } from '../exchange';
 import type { FuturesGridParams, SpotGridParams } from './types';
@@ -37,17 +38,23 @@ function gridsFor(lower: number, upper: number, targetStep: number) {
   return Math.max(5, Math.min(150, Math.round(Math.log(upper / lower) / Math.log(1 + targetStep))));
 }
 
-export function suggestSpotGrid(ex: Exchange, symbol: string, days = 7): Omit<SpotGridParams, 'sellOnStop'> | null {
+/** Число сеток не больше, чем позволяет сумма инвестиций (минимальный лот на уровень). */
+function capGrids(symbol: string, grids: number, lower: number, upper: number, investment: number | undefined, leverage: number, minQty: number) {
+  if (!investment) return grids;
+  return Math.max(2, Math.min(grids, maxFeasibleGrids(symbol, lower, upper, 'geometric', investment, leverage, minQty)));
+}
+
+export function suggestSpotGrid(ex: Exchange, symbol: string, days = 7, investment?: number): Omit<SpotGridParams, 'sellOnStop'> | null {
   const st = recentStats(ex, symbol, days);
   if (!st) return null;
   const tick = getAsset(symbol).tickSize;
   const lower = roundToStep(Math.min(st.p05, st.last) * 0.99, tick);
   const upper = roundToStep(Math.max(st.p95, st.last) * 1.01, tick);
   const step = Math.max(0.004, 4 * ex.config.fees.spotMaker);
-  return { symbol, lower, upper, grids: gridsFor(lower, upper, step), mode: 'geometric' };
+  return { symbol, lower, upper, grids: capGrids(symbol, gridsFor(lower, upper, step), lower, upper, investment, 1, spotQtyStep(symbol)), mode: 'geometric' };
 }
 
-export function suggestFuturesGrid(ex: Exchange, symbol: string, days = 7): Omit<FuturesGridParams, 'closeOnStop'> | null {
+export function suggestFuturesGrid(ex: Exchange, symbol: string, days = 7, investment?: number): Omit<FuturesGridParams, 'closeOnStop'> | null {
   const st = recentStats(ex, symbol, days);
   if (!st) return null;
   const tick = getAsset(symbol).tickSize;
@@ -56,6 +63,7 @@ export function suggestFuturesGrid(ex: Exchange, symbol: string, days = 7): Omit
   const range = Math.log(upper / lower);
   const direction = st.trend > range * 0.35 ? 'long' : st.trend < -range * 0.35 ? 'short' : 'neutral';
   const step = Math.max(0.003, 5 * ex.config.fees.linearMaker);
-  const leverage = Math.max(1, Math.min(10, Math.round(0.25 / Math.max(0.02, range))));
-  return { symbol, direction, lower, upper, grids: gridsFor(lower, upper, step), mode: 'geometric', leverage };
+  const spec = getAsset(symbol);
+  const leverage = Math.max(1, Math.min(10, spec.maxLeverage, Math.round(0.25 / Math.max(0.02, range))));
+  return { symbol, direction, lower, upper, grids: capGrids(symbol, gridsFor(lower, upper, step), lower, upper, investment, leverage, spec.minQty), mode: 'geometric', leverage };
 }

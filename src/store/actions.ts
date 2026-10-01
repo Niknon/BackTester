@@ -37,7 +37,7 @@ async function loadSymbolInto(market: MarketData, cfg: SessionConfig, symbol: st
   });
   if (res.errors.length) setProgress({ errors: [...(useSession.getState().progress?.errors ?? []), ...res.errors] });
   market.addSeries(symbol, res.series, res.provider);
-  if (cfg.fundingEnabled) {
+  if (cfg.fundingEnabled && !getAsset(symbol).spotOnly) {
     try {
       setProgress({ message: `${symbol}: история funding` });
       const f = await loadFunding(res.provider, symbol, warmupStart(cfg), cfg.end, signal);
@@ -156,6 +156,12 @@ function onEvent(ex: Exchange, e: ExchangeEvent) {
     case 'info':
       toast('info', e.message);
       return;
+    case 'alert': {
+      const a = e.alert;
+      toast('warn', `🔔 Алерт ${a.symbol}: цена ${a.dir === 'up' ? 'дошла до' : 'опустилась до'} ${fmtPrice(a.price, a.symbol)}`, a.note, 9000);
+      if (st.prefs.pauseOnAlert) pause();
+      return;
+    }
   }
 }
 
@@ -184,12 +190,14 @@ export async function startSession(cfg: SessionConfig) {
     startAutosave();
     resetCheckpoints(ex);
     const errs = useSession.getState().progress?.errors ?? [];
-    const first = cfg.symbols[0];
+    // если в сессии только спотовые инструменты (xStocks/золото) — открываем спот
+    const firstPerp = cfg.symbols.find((s) => !getAsset(s).spotOnly);
+    const first = firstPerp ?? cfg.symbols[0];
     useSession.setState({
       ex,
       status: 'ready',
       progress: null,
-      page: 'trade',
+      page: firstPerp ? 'trade' : 'spot',
       symbol: first,
       chartTf: defaultChartTf(cfg),
       savedAt: null,
@@ -357,7 +365,8 @@ export async function fastForward(time: number) {
   ex.quiet = true;
   try {
     while (ex.state.cursor < target && !ex.state.finished) {
-      ex.runTo(target, 40);
+      ex.runTo(target, 40, useSession.getState().prefs.pauseOnAlert);
+      if (ex.alertHit) break; // перемотка останавливается на сработавшем алерте
       setProgress({ done: ex.state.cursor - from, total: target - from, message: new Date(ex.now).toISOString().slice(0, 16).replace('T', ' ') });
       await new Promise((r) => setTimeout(r, 0));
       if (!useSession.getState().progress) break; // отменено

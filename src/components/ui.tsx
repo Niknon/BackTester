@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 
 export function cx(...a: (string | false | null | undefined)[]) {
   return a.filter(Boolean).join(' ');
@@ -149,7 +149,7 @@ export function Segmented<T extends string>({
 }: {
   value: T;
   onChange: (v: T) => void;
-  options: { value: T; label: ReactNode; className?: string }[];
+  options: { value: T; label: ReactNode; className?: string; disabled?: boolean }[];
   className?: string;
   size?: 'sm' | 'md';
 }) {
@@ -159,9 +159,10 @@ export function Segmented<T extends string>({
         <button
           key={o.value}
           type="button"
+          disabled={o.disabled}
           onClick={() => onChange(o.value)}
           className={cx(
-            'flex-1 rounded-[5px] transition-colors whitespace-nowrap',
+            'flex-1 rounded-[5px] transition-colors whitespace-nowrap disabled:opacity-40 disabled:cursor-default',
             size === 'sm' ? 'h-6 text-[11px] px-2' : 'h-7 px-3',
             value === o.value ? cx('bg-panel3 text-text font-semibold', o.className) : 'text-muted hover:text-text',
           )}
@@ -383,3 +384,34 @@ export function useResizable(initial: number, min: number, max: number, key: str
   return { h, onDown };
 }
 
+
+/**
+ * Состояние, запоминаемое между сессиями (localStorage).
+ * Возвращает [значение, установить и запомнить, установить без запоминания].
+ */
+export function usePersistent<T>(key: string, initial: T, allowed?: readonly T[]): [T, (v: T) => void, (v: T) => void] {
+  const [v, setV] = useState<T>(() => {
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw === null) return initial;
+      const parsed = JSON.parse(raw) as T;
+      if (allowed && !allowed.includes(parsed)) return initial;
+      if (typeof parsed !== typeof initial) return initial;
+      return parsed;
+    } catch {
+      return initial;
+    }
+  });
+  const save = useCallback(
+    (x: T) => {
+      setV(x);
+      try {
+        localStorage.setItem(key, JSON.stringify(x));
+      } catch {
+        /* приватный режим — просто не запоминаем */
+      }
+    },
+    [key],
+  );
+  return [v, save, setV];
+}

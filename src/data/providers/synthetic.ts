@@ -58,10 +58,13 @@ function backbone(symbol: string, days: number): Backbone {
   let logp = 0;
   let regime = 0; // лог-множитель волатильности (AR(1))
   let drift = 0;
+  // акции: в выходные биржа закрыта — токен почти не двигается (ANCHOR — понедельник)
+  const stock = spec.group === 'xstock';
   for (let d = 0; d < n; d++) {
     regime = 0.97 * regime + 0.18 * gaussian(rnd);
     drift = 0.99 * drift + 0.00025 * gaussian(rnd);
-    const sigma = baseSigma * Math.exp(Math.max(-1, Math.min(1.2, regime)));
+    const session = !stock ? 1 : d % 7 >= 5 ? 0.15 : 1.18;
+    const sigma = baseSigma * session * Math.exp(Math.max(-1, Math.min(1.2, regime)));
     // слабый возврат к среднему, чтобы цена за годы не уходила в бесконечность
     let r = drift + sigma * gaussian(rnd) - 0.004 * logp;
     if (rnd() < 0.015) r += (rnd() < 0.5 ? -1 : 1) * sigma * (2 + 3 * rnd()); // скачок
