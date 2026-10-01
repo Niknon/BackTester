@@ -46,6 +46,7 @@ export interface Prefs {
   indicators: IndicatorConfig[];
   speed: number;
   autosave: boolean;
+  notifyRebalance: boolean;
 }
 
 export const DEFAULT_INDICATORS: IndicatorConfig[] = [
@@ -81,6 +82,7 @@ function loadPrefs(): Prefs {
     indicators: DEFAULT_INDICATORS,
     speed: 20,
     autosave: true,
+    notifyRebalance: true,
   };
   try {
     const raw = localStorage.getItem(PREFS_KEY);

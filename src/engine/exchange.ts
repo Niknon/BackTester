@@ -603,7 +603,8 @@ export class Exchange {
       } else {
         const cost = this.orderCost(acc, { ...o, filledQty: 0, price: o.orderType === 'Limit' ? o.price : 0, triggerPrice: o.triggerPrice ?? (o.orderType === 'Market' ? last : undefined) });
         const avail = this.available(acc);
-        if (cost > avail + 1e-6) return this.reject(o, `Недостаточно средств: нужно ${cost.toFixed(2)}, доступно ${Math.max(0, avail).toFixed(2)} USDT`);
+        // ордер, только сокращающий позицию, маржи не требует (cost = 0) — не отклоняем
+        if (cost > 1e-9 && cost > avail + 1e-6) return this.reject(o, `Недостаточно средств: нужно ${cost.toFixed(2)}, доступно ${Math.max(0, avail).toFixed(2)} USDT`);
       }
     } else {
       const base = spec.base;

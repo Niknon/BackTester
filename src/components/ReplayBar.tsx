@@ -152,6 +152,9 @@ export function ReplayBar() {
           <Check checked={prefs.pauseOnLiquidation} onChange={(v) => setPrefs({ pauseOnLiquidation: v })}>
             Пауза при ликвидации
           </Check>
+          <Check checked={prefs.notifyRebalance} onChange={(v) => setPrefs({ notifyRebalance: v })}>
+            Уведомления о ребалансировках ботов
+          </Check>
           <Check checked={prefs.autosave} onChange={(v) => setPrefs({ autosave: v })}>
             Автосохранение раз в минуту
           </Check>

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { ASSETS, getAsset, roundToStep, spotQtyStep } from '../../data/assets';
 import { gridLevels } from '../../engine/bots/grid';
 import { suggestFuturesGrid, suggestSpotGrid } from '../../engine/bots/suggest';
+import { COMBO_UTILIZATION } from '../../engine/bots/combo';
 import type { BotParamsMap, BotType, ComboLeg, GridMode } from '../../engine/bots/types';
 import { ensureSymbol } from '../../store/actions';
 import { useSession, useTick, toast } from '../../store/session';
@@ -381,11 +382,12 @@ export function ComboForm({ onSubmit, busy }: FormProps) {
             <Row
               key={i}
               label={<span className={l.side === 'long' ? 'text-up' : 'text-down'}>{l.side === 'long' ? 'Лонг' : 'Шорт'} {getAsset(l.symbol).base}</span>}
-              value={`${fmtUsd(Number(inv) * 0.97 * lev * (Number(l.weight) || 0) / 100)} USDT`}
+              value={`${fmtUsd(Number(inv) * COMBO_UTILIZATION * lev * (Number(l.weight) || 0) / 100)} USDT`}
             />
           ))}
-          <Row label="Общий объём позиций" value={<b>{fmtUsd(Number(inv) * 0.97 * lev)} USDT</b>} />
+          <Row label="Общий объём позиций" value={<b>{fmtUsd(Number(inv) * COMBO_UTILIZATION * lev)} USDT</b>} />
           <Row label="Маржа (инвестиции)" value={`${fmtUsd(Number(inv))} USDT`} />
+          <div className="text-[10px] text-dim mt-1">{Math.round((1 - COMBO_UTILIZATION) * 100)}% инвестиций остаётся в запасе под колебания маржи и комиссии.</div>
         </div>
       )}
       <div className="flex flex-col gap-2">

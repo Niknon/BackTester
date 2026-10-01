@@ -116,6 +116,14 @@ describe('Фьючерсный комбо-бот (ребалансировка)'
     for (let i = 0; i < n - 1; i++) ex.step();
     const b = ex.state.bots[bot!.id];
     expect(b.stats.rebalances).toBeGreaterThanOrEqual(7);
+    // журнал ребалансировок: стартовая запись + по одной на каждую ребалансировку
+    const log = b.rt.log as any[];
+    expect(log.length).toBe(b.stats.rebalances + 1);
+    expect(log[0].reason).toBe('start');
+    expect(log[1].reason).toBe('time');
+    expect(log[1].trades.length).toBeGreaterThan(0);
+    expect(log[1].trades[0].price).toBeGreaterThan(0);
+    expect(log[1].fees).toBeGreaterThan(0);
     // лонг растущего и шорт падающего — прибыль
     expect(ex.botSummary(b).pnl).toBeGreaterThan(0);
     // веса близки к целевым после ребалансировки

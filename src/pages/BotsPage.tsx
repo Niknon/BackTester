@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { BOT_LABELS, type AnyBot, type BotType } from '../engine/bots/types';
-import { comboWeights } from '../engine/bots/combo';
 import { runBotBacktest, type BotBacktestResult } from '../engine/headless';
 import { bump, toast, useSession, useTick } from '../store/session';
 import { fmtDuration, fmtNum, fmtPct, fmtPrice, fmtTime, fmtUsd, pnlClass } from '../lib/format';
@@ -9,6 +8,7 @@ import { ComboForm, DcaForm, FuturesGridForm, MartingaleForm, SpotGridForm, type
 import { ReportGrid } from '../components/ReportGrid';
 import { EquityChart } from '../components/EquityChart';
 import { PriceChart } from '../components/chart/PriceChart';
+import { BotDetailsModal, ComboRebalanceStatus, ComboWeights, LastRebalance, RebalanceTable } from '../components/bots/BotDetails';
 
 const TYPES: { type: BotType; icon: string; desc: string }[] = [
   { type: 'spotGrid', icon: '▦', desc: 'Покупает дёшево и продаёт дорого в диапазоне. Для бокового рынка.' },
@@ -30,6 +30,8 @@ export function BotsPage() {
   const [progress, setProgress] = useState(0);
   const [bt, setBt] = useState<(BotBacktestResult & { name: string; from: string }) | null>(null);
   const [btFrom, setBtFrom] = useState<'now' | 'start'>('now');
+  const [detailsId, setDetailsId] = useState<string | null>(null);
+  const setPrefs = useSession((s) => s.setPrefs);
   const bots = Object.values(ex.state.bots);
   const running = bots.filter((b) => b.status === 'running' || b.status === 'waiting');
   const stopped = bots.filter((b) => !(b.status === 'running' || b.status === 'waiting'));
@@ -156,6 +158,12 @@ export function BotsPage() {
                       </div>
                     )}
                     <EquityChart equity={bt.equity} bench={bt.bench} height={320} />
+                    {bt.bot?.type === 'futuresCombo' && (
+                      <div>
+                        <div className="font-semibold mb-2">Журнал ребалансировок</div>
+                        <RebalanceTable bot={bt.bot} />
+                      </div>
+                    )}
                   </>
                 ) : (
                   <div className="text-down">{bt.error}</div>
@@ -179,7 +187,15 @@ export function BotsPage() {
           {running.length ? (
             <div className="grid grid-cols-[repeat(auto-fill,minmax(420px,1fr))] gap-2">
               {running.map((b) => (
-                <BotCard key={b.id} bot={b} onChart={() => set({ page: b.type === 'spotGrid' || b.type === 'dca' ? 'spot' : 'trade', symbol: botSymbol(b) })} />
+                <BotCard
+                  key={b.id}
+                  bot={b}
+                  onDetails={() => setDetailsId(b.id)}
+                  onChart={() => {
+                    setPrefs({ showBotTrades: true, showBotGrids: true });
+                    set({ page: b.type === 'spotGrid' || b.type === 'dca' ? 'spot' : 'trade', symbol: botSymbol(b) });
+                  }}
+                />
               ))}
             </div>
           ) : (
@@ -214,7 +230,7 @@ export function BotsPage() {
                   .slice()
                   .reverse()
                   .map((b) => (
-                    <tr key={b.id}>
+                    <tr key={b.id} className="cursor-pointer" onClick={() => setDetailsId(b.id)} title="Открыть подробности">
                       <td className="font-semibold">{b.name}</td>
                       <td>
                         <Badge color={b.status === 'liquidated' ? 'down' : 'muted'}>{BOT_LABELS[b.type]}</Badge>
@@ -239,19 +255,17 @@ export function BotsPage() {
           )}
         </div>
       )}
+      {detailsId && <BotDetailsModal key={detailsId} bot={ex.state.bots[detailsId] ?? null} onClose={() => setDetailsId(null)} />}
     </div>
   );
 }
 
-function BotCard({ bot, onChart }: { bot: AnyBot; onChart: () => void }) {
+function BotCard({ bot, onChart, onDetails }: { bot: AnyBot; onChart: () => void; onDetails: () => void }) {
   const ex = useSession((s) => s.ex)!;
-  const [open, setOpen] = useState(false);
   const s = ex.botSummary(bot);
   const acc = ex.botAccount(bot);
   const p = bot.params as any;
   const orders = ex.activeOrders(acc.id);
-  const positions = Object.values(acc.positions);
-  const coins = Object.entries(acc.spot).filter(([, q]) => q > 0);
   const runtime = ex.now - (bot.startedTime ?? bot.createdTime);
   return (
     <div className="bg-panel rounded-lg p-3 flex flex-col gap-2 border border-line">
@@ -301,42 +315,16 @@ function BotCard({ bot, onChart }: { bot: AnyBot; onChart: () => void }) {
         )}
         <span>Ордеров: {orders.length}</span>
       </div>
-      {open && (
-        <div className="text-[11px] flex flex-col gap-1 border-t border-line pt-2">
-          {bot.type === 'futuresCombo' && (
-            <ComboDetails bot={bot} />
-          )}
-          {positions.map((pos) => (
-            <div key={pos.symbol} className="flex justify-between">
-              <span>
-                {pos.symbol} <span className={pos.size > 0 ? 'text-up' : 'text-down'}>{fmtNum(pos.size, 4)}</span> @ {fmtPrice(pos.avgPrice, pos.symbol)}
-              </span>
-              <span className={pnlClass(ex.unrealisedPnl(pos))}>{fmtUsd(ex.unrealisedPnl(pos), 2, true)}</span>
-            </div>
-          ))}
-          {coins.map(([c, q]) => (
-            <div key={c} className="flex justify-between">
-              <span>
-                {c}: {fmtNum(q, 6)}
-              </span>
-              <span>{fmtUsd(q * ex.price(`${c}USDT`))} USDT</span>
-            </div>
-          ))}
-          <div className="flex justify-between">
-            <span>USDT кошелька бота</span>
-            <span>{fmtUsd(acc.walletBalance)}</span>
-          </div>
-          <div className="flex justify-between">
-            <span>Комиссии / funding</span>
-            <span>
-              {fmtUsd(-acc.stats.fees)} / {fmtUsd(acc.stats.funding, 2, true)}
-            </span>
-          </div>
+      {bot.type === 'futuresCombo' && (
+        <div className="flex flex-col gap-1.5 border-t border-line pt-2">
+          <ComboRebalanceStatus bot={bot} />
+          <ComboWeights bot={bot} />
+          <LastRebalance bot={bot} />
         </div>
       )}
       <div className="flex gap-2">
-        <button className="btn btn-sm btn-ghost" onClick={() => setOpen(!open)}>
-          {open ? 'Скрыть' : 'Подробнее'}
+        <button className="btn btn-sm btn-ghost" onClick={onDetails}>
+          {bot.type === 'futuresCombo' ? 'Журнал и подробности' : 'Подробнее'}
         </button>
         <button className="btn btn-sm btn-ghost" onClick={onChart}>
           На графике
@@ -352,29 +340,6 @@ function BotCard({ bot, onChart }: { bot: AnyBot; onChart: () => void }) {
           Остановить
         </button>
       </div>
-    </div>
-  );
-}
-
-function ComboDetails({ bot }: { bot: AnyBot }) {
-  const ex = useSession((s) => s.ex)!;
-  const w = comboWeights(ex, bot as any);
-  const legs = (bot.params as any).legs as { symbol: string; side: string; weight: number }[];
-  return (
-    <div className="flex flex-col gap-1 mb-1">
-      {legs.map((l, i) => (
-        <div key={l.symbol} className="flex items-center gap-2">
-          <span className="w-24">{l.symbol}</span>
-          <span className={l.side === 'long' ? 'text-up' : 'text-down'}>{l.side === 'long' ? 'Лонг' : 'Шорт'}</span>
-          <div className="flex-1 h-1.5 bg-panel3 rounded relative">
-            <div className="absolute inset-y-0 left-0 bg-brand/70 rounded" style={{ width: `${w.weights[i] * 100}%` }} />
-            <div className="absolute -top-0.5 w-0.5 h-2.5 bg-text" style={{ left: `${l.weight}%` }} />
-          </div>
-          <span className="num w-24 text-right">
-            {fmtNum(w.weights[i] * 100, 1)}% / {l.weight}%
-          </span>
-        </div>
-      ))}
     </div>
   );
 }

@@ -45,6 +45,18 @@ describe('USDT-перпетуалы: исполнение и PnL', () => {
     expect(ok.status).toBe('Filled');
   });
 
+  it('сокращающий ордер проходит даже при отрицательном доступном балансе', () => {
+    const ex = mkExchange({ BTCUSDT: [[100, 100, 97, 97], ...flat(97, 2)] }, { initialBalance: 100 });
+    ex.setLeverage(MAIN, 'BTCUSDT', 10);
+    ex.placeOrder({ category: 'linear', symbol: 'BTCUSDT', side: 'Buy', orderType: 'Market', qty: 9.5 });
+    ex.step(); // цена 97: убыток, доступный баланс < 0, но до ликвидации далеко
+    expect(ex.main.positions.BTCUSDT.size).toBe(9.5);
+    expect(ex.available(ex.main)).toBeLessThan(0);
+    const o = ex.placeOrder({ category: 'linear', symbol: 'BTCUSDT', side: 'Sell', orderType: 'Market', qty: 3 });
+    expect(o.status).toBe('Filled');
+    expect(ex.main.positions.BTCUSDT.size).toBeCloseTo(6.5, 9);
+  });
+
   it('разворот позиции одним ордером', () => {
     const ex = mkExchange({ BTCUSDT: flat(100, 3) });
     ex.placeOrder({ category: 'linear', symbol: 'BTCUSDT', side: 'Buy', orderType: 'Market', qty: 1 });

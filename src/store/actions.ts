@@ -147,6 +147,10 @@ function onEvent(ex: Exchange, e: ExchangeEvent) {
       if (e.accountId === MAIN) toast(e.pnl >= 0 ? 'success' : 'warn', `Экспирация ${e.symbol}`, `Результат ${fmtUsd(e.pnl, 2, true)} USDT`, 7000);
       return;
     case 'bot':
+      if (/ребалансировка/.test(e.message)) {
+        if (st.prefs.notifyRebalance) toast('info', 'Ребалансировка', e.message, 4000);
+        return;
+      }
       if (e.level !== 'info' || /остановлен/.test(e.message)) toast(e.level === 'error' ? 'error' : e.level === 'warn' ? 'warn' : 'info', 'Бот', e.message, 6000);
       return;
     case 'info':
