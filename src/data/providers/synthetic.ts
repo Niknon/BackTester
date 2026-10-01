@@ -59,7 +59,7 @@ function backbone(symbol: string, days: number): Backbone {
   let regime = 0; // лог-множитель волатильности (AR(1))
   let drift = 0;
   // акции: в выходные биржа закрыта — токен почти не двигается (ANCHOR — понедельник)
-  const stock = spec.group === 'xstock';
+  const stock = spec.group === 'xstock' || !!spec.calmWeekends;
   for (let d = 0; d < n; d++) {
     regime = 0.97 * regime + 0.18 * gaussian(rnd);
     drift = 0.99 * drift + 0.00025 * gaussian(rnd);

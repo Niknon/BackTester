@@ -17,7 +17,13 @@
 - **Ликвидации**: изолированные — по цене ликвидации с потерей маржи; кросс — по коэффициенту поддерживающей маржи аккаунта (MMR первого тира = IMR<sub>min</sub>/2, как у Bybit).
 - Единый торговый аккаунт (UTA): капитал, доступный баланс, IM/MM, MMR.
 
-### TradFi: токенизированные акции (xStocks) и золото
+### TradFi-фьючерсы (USDT-перпетуалы с плечом)
+- **Акции**: AAPL, MSFT, GOOGL, AMZN, META, NFLX, AMD, AVGO, TSM, ASML, ARM, MRVL, SMCI, INTC, ORCL, PLTR, CRM, ADBE, CSCO, IBM, SHOP, COIN, HOOD, MSTR, CRCL, MARA, RIVN, BRKB, LLY, UNH, JNJ, MRK, KO, WMT, XOM, GME + NVDA, TSLA, MU, SKHY, SNDK, SPCX.
+- **ETF и индексы**: SPY, QQQ, IWM, TQQQ, SQQQ, SOXL, XLE, XBI, USO, US500 (S&P 500), US100 (Nasdaq-100).
+- **Сырьё**: золото XAU, серебро XAG, платина XPT, палладий XPD, медь XCU, нефть WTI (CL), газ NG.
+- Всё как у обычных перпетуалов: плечо, кросс/изолированная маржа, TP/SL, funding, ликвидации, фьючерсные гриды, мартингейл, комбо. Источник — Bybit, фолбэк — те же перпетуалы OKX (большинство листинговано в 2026 г.).
+
+### TradFi на споте: токенизированные акции (xStocks) и золото
 - Раздел TradFi спота Bybit: **xStocks** — токены акций и ETF (AAPLX, MSFTX, NVDAX, GOOGLX, AMZNX, METAX, TSLAX, NFLXX, AMDX, AVGOX, ORCLX, PLTRX, COINX, HOODX, MSTRX, CRCLX, INTCX, MRVLX, CRMX, ADBEX, CSCOX, IBMX, LLYX, UNHX, JNJX, MRKX, KOX, WMTX, XOMX, GMEX, MCDX, JPMX, SPYX, QQQX, IWMX, TQQQX, GLDX) и токены золота **XAUT**, **PAXG**.
 - Торгуются **только на споте** за USDT, 24/7, без плеча и funding (как на Bybit); доступны спотовый грид и DCA. Перпетуалы, фьючерсные боты и комбо на них не открываются — движок отклоняет такие ордера с понятным сообщением.
 - Свечи — со спота Bybit (`category=spot`, история с июля 2025); резервный источник — USDT-перпетуал OKX на ту же акцию (≈ с марта 2026). В синтетике у акций спокойные выходные (биржа закрыта).

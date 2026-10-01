@@ -245,3 +245,15 @@ describe('Ценовые алерты', () => {
     expect(ex.alerts().length).toBe(0);
   });
 });
+
+describe('TradFi-перпетуалы', () => {
+  it('фьючерс на акцию/золото торгуется с плечом, а xStock той же акции — только спот', () => {
+    const ex = mkExchange({ AAPLUSDT: flat(330, 3), XAUUSDT: flat(4179, 3) });
+    expect(ex.setLeverage(MAIN, 'AAPLUSDT', 20)).toBeNull();
+    const o = ex.placeOrder({ category: 'linear', symbol: 'AAPLUSDT', side: 'Sell', orderType: 'Market', qty: 10 });
+    expect(o.status).toBe('Filled');
+    expect(ex.main.positions.AAPLUSDT.size).toBe(-10);
+    expect(ex.setLeverage(MAIN, 'XAUUSDT', 100)).toBeNull();
+    expect(ex.placeOrder({ category: 'linear', symbol: 'XAUUSDT', side: 'Buy', orderType: 'Market', qty: 0.5 }).status).toBe('Filled');
+  });
+});

@@ -6,7 +6,7 @@ import { useSession, useTick } from '../../store/session';
 import { fmtPct, fmtPrice } from '../../lib/format';
 import { cx, Dropdown } from '../ui';
 
-type SelTab = 'loaded' | 'all' | 'options' | 'crypto' | 'xstock';
+type SelTab = 'loaded' | 'all' | 'options' | 'crypto' | 'xstock' | 'tradfi';
 
 export function SymbolSelector({
   symbol,
@@ -30,6 +30,7 @@ export function SymbolSelector({
     if (!spot) l = l.filter((a) => !a.spotOnly);
     if (optionsOnly || tab === 'options') l = l.filter((a) => a.hasOptions);
     if (tab === 'crypto') l = l.filter((a) => a.group === 'crypto');
+    if (tab === 'tradfi') l = l.filter((a) => a.group === 'tradfi');
     if (tab === 'xstock') l = l.filter((a) => a.group === 'xstock' || a.group === 'commodity');
     if (tab === 'loaded') l = l.filter((a) => ex.market.has(a.symbol));
     const extra = ex.market
@@ -51,6 +52,8 @@ export function SymbolSelector({
       ]
     : [
         ['loaded', 'Загруженные'],
+        ['crypto', 'Крипто'],
+        ['tradfi', 'TradFi'],
         ['options', 'С опционами'],
         ['all', 'Все'],
       ];
@@ -115,7 +118,7 @@ export function SymbolSelector({
                       <td>
                         <span className="font-semibold">{a.symbol}</span>
                         {a.hasOptions && <span className="ml-1.5 text-[9px] text-brand">OPT</span>}
-                        {a.group === 'tradfi' && <span className="ml-1 text-[9px] text-info">STOCK</span>}
+                        {a.group === 'tradfi' && <span className="ml-1 text-[9px] text-info">{a.sector === 'commodity' ? 'COMMODITY' : a.sector === 'index' ? 'INDEX' : a.sector === 'etf' ? 'ETF' : 'STOCK'}</span>}
                         {a.group === 'xstock' && <span className="ml-1 text-[9px] text-info">xStock</span>}
                         {a.group === 'commodity' && <span className="ml-1 text-[9px] text-brand">GOLD</span>}
                         <div className="text-[10px] text-dim">

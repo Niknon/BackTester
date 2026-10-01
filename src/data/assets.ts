@@ -51,7 +51,18 @@ export interface AssetSpec {
   bybitCategory?: 'linear' | 'spot';
   /** тикер базового актива на фондовом рынке (для xStocks) */
   underlying?: string;
+  /** подраздел TradFi: акции, ETF, индексы, сырьё */
+  sector?: 'stock' | 'etf' | 'index' | 'commodity';
+  /** синтетика: в выходные рынок закрыт (цена почти не двигается) */
+  calmWeekends?: boolean;
 }
+
+export const SECTOR_LABEL: Record<NonNullable<AssetSpec['sector']>, string> = {
+  stock: 'Акции',
+  etf: 'ETF',
+  index: 'Индексы',
+  commodity: 'Сырьё: металлы, нефть, газ',
+};
 
 const C = (
   base: string,
@@ -101,6 +112,34 @@ const T = (
   refVol,
   okx: `${base}-USDT-SWAP`,
   binance: null,
+});
+
+/** TradFi USDT-перпетуал Bybit (фьючерс с плечом на акцию, ETF, индекс или сырьё); фолбэк — тот же перпетуал OKX. */
+const TF = (
+  base: string,
+  name: string,
+  sector: NonNullable<AssetSpec['sector']>,
+  maxLeverage: number,
+  refPrice: number,
+  refVol: number,
+  extra: Partial<AssetSpec> = {},
+): AssetSpec => ({
+  symbol: `${base}USDT`,
+  base,
+  name,
+  group: 'tradfi',
+  hasOptions: false,
+  tickSize: refPrice >= 1000 ? 0.1 : refPrice >= 10 ? 0.01 : 0.0001,
+  qtyStep: refPrice >= 1000 ? 0.001 : refPrice >= 10 ? 0.01 : 1,
+  minQty: refPrice >= 1000 ? 0.001 : refPrice >= 10 ? 0.01 : 1,
+  maxLeverage,
+  refPrice,
+  refVol,
+  okx: `${base}-USDT-SWAP`,
+  binance: null,
+  sector,
+  calmWeekends: true,
+  ...extra,
 });
 
 /**
@@ -163,6 +202,61 @@ export const ASSETS: AssetSpec[] = [
   T('MU', 'Micron Technology', 0.01, 50, 1070, 0.55),
   T('SKHY', 'SK Hynix', 0.01, 50, 187, 0.55),
   T('SNDK', 'SanDisk', 0.1, 50, 1730, 0.65),
+  // ── TradFi-перпетуалы Bybit: акции ──
+  TF('AAPL', 'Apple', 'stock', 25, 330, 0.3),
+  TF('MSFT', 'Microsoft', 'stock', 20, 516, 0.28),
+  TF('GOOGL', 'Alphabet', 'stock', 50, 339, 0.32),
+  TF('AMZN', 'Amazon', 'stock', 20, 249, 0.35),
+  TF('META', 'Meta Platforms', 'stock', 20, 727, 0.38),
+  TF('NFLX', 'Netflix', 'stock', 20, 68, 0.4),
+  TF('AMD', 'AMD', 'stock', 25, 618, 0.55),
+  TF('AVGO', 'Broadcom', 'stock', 20, 346, 0.45),
+  TF('TSM', 'TSMC', 'stock', 20, 459, 0.4),
+  TF('ASML', 'ASML', 'stock', 20, 1813, 0.4),
+  TF('ARM', 'Arm Holdings', 'stock', 20, 294, 0.6),
+  TF('MRVL', 'Marvell', 'stock', 50, 268, 0.6),
+  TF('SMCI', 'Super Micro Computer', 'stock', 20, 42, 0.8),
+  TF('INTC', 'Intel', 'stock', 25, 120, 0.5),
+  TF('ORCL', 'Oracle', 'stock', 20, 138, 0.45),
+  TF('PLTR', 'Palantir', 'stock', 20, 191, 0.65),
+  TF('CRM', 'Salesforce', 'stock', 10, 237, 0.35),
+  TF('ADBE', 'Adobe', 'stock', 20, 242, 0.35),
+  TF('CSCO', 'Cisco', 'stock', 20, 109, 0.25),
+  TF('IBM', 'IBM', 'stock', 20, 226, 0.28),
+  TF('SHOP', 'Shopify', 'stock', 10, 149, 0.55),
+  TF('COIN', 'Coinbase', 'stock', 20, 190, 0.7),
+  TF('HOOD', 'Robinhood', 'stock', 20, 112, 0.75),
+  TF('MSTR', 'Strategy (MicroStrategy)', 'stock', 50, 161, 0.8),
+  TF('CRCL', 'Circle', 'stock', 50, 83, 0.9),
+  TF('MARA', 'MARA Holdings', 'stock', 10, 11.2, 0.9),
+  TF('RIVN', 'Rivian', 'stock', 20, 14.8, 0.7),
+  TF('BRKB', 'Berkshire Hathaway B', 'stock', 20, 502, 0.2),
+  TF('LLY', 'Eli Lilly', 'stock', 20, 1156, 0.35),
+  TF('UNH', 'UnitedHealth', 'stock', 20, 366, 0.35),
+  TF('JNJ', 'Johnson & Johnson', 'stock', 10, 258, 0.18),
+  TF('MRK', 'Merck', 'stock', 10, 144, 0.25),
+  TF('KO', 'Coca-Cola', 'stock', 20, 86, 0.15),
+  TF('WMT', 'Walmart', 'stock', 10, 105, 0.2),
+  TF('XOM', 'Exxon Mobil', 'stock', 10, 164, 0.25),
+  TF('GME', 'GameStop', 'stock', 20, 24, 0.8),
+  // ── TradFi-перпетуалы: ETF и индексы ──
+  TF('SPY', 'SPDR S&P 500 ETF', 'etf', 50, 765, 0.16),
+  TF('IWM', 'iShares Russell 2000', 'etf', 20, 279, 0.22),
+  TF('TQQQ', 'ProShares UltraPro QQQ (3x)', 'etf', 10, 79, 0.6),
+  TF('SQQQ', 'ProShares UltraPro Short QQQ (−3x)', 'etf', 20, 34, 0.6),
+  TF('XLE', 'Energy Select Sector SPDR', 'etf', 20, 63, 0.25),
+  TF('XBI', 'SPDR S&P Biotech', 'etf', 20, 155, 0.35),
+  TF('USO', 'United States Oil Fund', 'etf', 20, 150, 0.35),
+  TF('US500', 'Индекс S&P 500', 'index', 20, 7673, 0.16),
+  TF('US100', 'Индекс Nasdaq-100', 'index', 20, 30557, 0.2),
+  // ── TradFi-перпетуалы: сырьё ──
+  TF('XAU', 'Золото (унция)', 'commodity', 100, 4179, 0.18),
+  TF('XAG', 'Серебро (унция)', 'commodity', 50, 61, 0.3),
+  TF('XPT', 'Платина (унция)', 'commodity', 50, 1721, 0.3),
+  TF('XPD', 'Палладий (унция)', 'commodity', 50, 1187, 0.35),
+  TF('XCU', 'Медь (фунт)', 'commodity', 50, 6.59, 0.25, { tickSize: 0.0001, qtyStep: 0.1, minQty: 0.1 }),
+  TF('CL', 'Нефть WTI (баррель)', 'commodity', 50, 92.8, 0.35),
+  TF('NG', 'Природный газ (MMBtu)', 'commodity', 50, 2.95, 0.6, { tickSize: 0.001, qtyStep: 1, minQty: 1 }),
   // ── Популярные USDT-перпетуалы ──
   C('BNB', 'BNB', false, 0.1, 0.01, 75, 760, 0.45),
   C('ADA', 'Cardano', false, 0.0001, 1, 75, 0.245, 0.8),
@@ -293,7 +387,7 @@ export function isPerp(symbol: string) {
 export function kindLabel(spec: AssetSpec) {
   if (spec.group === 'xstock') return 'Токенизированная акция · спот';
   if (spec.group === 'commodity') return 'Токен золота · спот';
-  if (spec.group === 'tradfi') return 'TradFi перпетуал';
+  if (spec.group === 'tradfi') return spec.sector ? `TradFi перпетуал · ${SECTOR_LABEL[spec.sector].split(':')[0]}` : 'TradFi перпетуал';
   return 'USDT-перпетуал';
 }
 

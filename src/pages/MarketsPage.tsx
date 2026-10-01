@@ -126,7 +126,7 @@ export function MarketsPage() {
                     <span className="w-6 h-6 rounded-full bg-brand/15 text-brand text-[9px] font-bold flex items-center justify-center">{r.a.base.slice(0, 4)}</span>
                     <div>
                       <div className="font-semibold">
-                        {r.a.symbol} {r.a.hasOptions && <Badge color="brand">OPT</Badge>} {r.a.group === 'tradfi' && <Badge color="info">STOCK</Badge>}
+                        {r.a.symbol} {r.a.hasOptions && <Badge color="brand">OPT</Badge>} {r.a.group === 'tradfi' && <Badge color="info">{r.a.sector === 'commodity' ? 'COMMODITY' : r.a.sector === 'index' ? 'INDEX' : r.a.sector === 'etf' ? 'ETF' : 'STOCK'}</Badge>}
                         {r.a.group === 'xstock' && <Badge color="info">xStock</Badge>}
                         {r.a.group === 'commodity' && <Badge color="brand">GOLD</Badge>}
                       </div>

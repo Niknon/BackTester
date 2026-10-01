@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ASSETS, getAsset, hasAsset, kindLabel, registerAsset } from '../data/assets';
+import { ASSETS, getAsset, hasAsset, kindLabel, registerAsset, SECTOR_LABEL } from '../data/assets';
 import { DAY, INTERVALS, intervalMs } from '../data/intervals';
 import { PROVIDER_LIST } from '../data/loader';
 import type { IntervalKey, ProviderId } from '../data/types';
@@ -45,7 +45,11 @@ function AssetPicker({ selected, onToggle }: { selected: string[]; onToggle: (s:
   const groups = [
     { title: 'Базовые активы опционов Bybit — крипто', items: ASSETS.filter((a) => a.hasOptions && a.group === 'crypto') },
     { title: 'Perp Options Bybit — TradFi (акции/ETF)', items: ASSETS.filter((a) => a.hasOptions && a.group === 'tradfi') },
-    { title: 'Другие USDT-перпетуалы', items: ASSETS.filter((a) => !a.hasOptions && !a.spotOnly) },
+    ...(['stock', 'etf', 'index', 'commodity'] as const).map((sec) => ({
+      title: `TradFi Bybit — фьючерсы с плечом: ${SECTOR_LABEL[sec]}`,
+      items: ASSETS.filter((a) => a.group === 'tradfi' && !a.hasOptions && a.sector === sec),
+    })),
+    { title: 'Другие USDT-перпетуалы (крипто)', items: ASSETS.filter((a) => !a.hasOptions && !a.spotOnly && a.group === 'crypto') },
     {
       title: 'TradFi на споте — токенизированные акции и ETF (xStocks), золото. Только спот, 24/7',
       note: 'История xStocks на Bybit — с июля 2025. Резервный источник (OKX, перпетуалы на те же акции) — примерно с марта 2026; для более ранних дат без доступа к Bybit используйте «Синтетику».',
