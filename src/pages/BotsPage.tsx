@@ -291,6 +291,7 @@ function BotCard({ bot, onChart }: { bot: AnyBot; onChart: () => void }) {
       </div>
       <div className="text-[11px] text-muted flex flex-wrap gap-x-3">
         <span>Инвестиции: {fmtUsd(bot.investment)}</span>
+        {p.leverage && <span>Плечо: <b className="text-brand">{p.leverage}x</b></span>}
         <span>Капитал: {fmtUsd(s.equity)}</span>
         {(bot.type === 'spotGrid' || bot.type === 'futuresGrid') && (
           <span>

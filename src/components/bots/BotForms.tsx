@@ -111,6 +111,30 @@ function GridStats({ symbol, lower, upper, grids, mode, investment, leverage = 1
   );
 }
 
+
+/** Явный выбор плеча: поле + быстрые кнопки + ползунок. */
+function LeverageControl({ value, onChange, max, hint }: { value: number; onChange: (v: number) => void; max: number; hint?: string }) {
+  const presets = [1, 2, 3, 5, 10, 20, 50, 100].filter((x) => x <= max);
+  return (
+    <div className="flex flex-col gap-1.5 bg-panel2 rounded-md p-2.5 border border-line2">
+      <div className="flex items-center gap-2">
+        <span className="font-semibold">Плечо</span>
+        {hint && <span className="text-[10px] text-muted">{hint}</span>}
+        <NumInput value={value} onChange={(v) => v !== '' && onChange(Math.max(1, Math.min(max, Math.round(v))))} suffix="x" className="!h-7 w-24 ml-auto" />
+      </div>
+      <div className="flex gap-1 flex-wrap">
+        {presets.map((p) => (
+          <button key={p} type="button" className={cx('chip border border-line2 !py-0.5', value === p && 'active !border-brand !text-brand')} onClick={() => onChange(p)}>
+            {p}x
+          </button>
+        ))}
+      </div>
+      <input type="range" className="range" min={1} max={max} value={value} onChange={(e) => onChange(Number(e.target.value))} />
+      <div className="text-[10px] text-dim">Максимум для выбранных монет: {max}x</div>
+    </div>
+  );
+}
+
 /* ───────── Спотовый грид ───────── */
 
 export function SpotGridForm({ onSubmit, busy, initialSymbol }: FormProps) {
@@ -260,13 +284,7 @@ export function FuturesGridForm({ onSubmit, busy, initialSymbol }: FormProps) {
         <NumInput label="Сеток" value={grids} onChange={setGrids} step={1} />
         <Select value={mode} onChange={setMode} options={[{ value: 'geometric', label: 'Геометрическая' }, { value: 'arithmetic', label: 'Арифметическая' }]} />
       </div>
-      <div>
-        <div className="flex justify-between text-[11px] mb-1">
-          <span className="text-muted">Плечо</span>
-          <span className="text-brand font-semibold">{lev}x</span>
-        </div>
-        <input type="range" className="range" min={1} max={max} value={lev} onChange={(e) => setLev(Number(e.target.value))} />
-      </div>
+      <LeverageControl value={lev} onChange={setLev} max={max} />
       <GridStats symbol={symbol} lower={Number(lower)} upper={Number(upper)} grids={Number(grids)} mode={mode} investment={Number(inv)} leverage={lev} fee={ex.config.fees.linearMaker} />
       <Investment value={inv} onChange={setInv} min={10} />
       <details className="text-[12px]">
@@ -355,13 +373,21 @@ export function ComboForm({ onSubmit, busy }: FormProps) {
           <span className={cx('ml-auto text-[11px] num', Math.abs(sum - 100) > 0.5 ? 'text-down' : 'text-up')}>Σ {fmtNum(sum, 2)}%</span>
         </div>
       </div>
-      <div>
-        <div className="flex justify-between text-[11px] mb-1">
-          <span className="text-muted">Плечо</span>
-          <span className="text-brand font-semibold">{lev}x</span>
+      <LeverageControl value={lev} onChange={setLev} max={maxLev} hint="одно для всех монет портфеля" />
+      {Number(inv) > 0 && (
+        <div className="bg-panel2 rounded-md px-3 py-2 text-[11px]">
+          <div className="text-muted mb-1">Бот откроет позиции (≈, при текущих ценах):</div>
+          {legs.map((l, i) => (
+            <Row
+              key={i}
+              label={<span className={l.side === 'long' ? 'text-up' : 'text-down'}>{l.side === 'long' ? 'Лонг' : 'Шорт'} {getAsset(l.symbol).base}</span>}
+              value={`${fmtUsd(Number(inv) * 0.97 * lev * (Number(l.weight) || 0) / 100)} USDT`}
+            />
+          ))}
+          <Row label="Общий объём позиций" value={<b>{fmtUsd(Number(inv) * 0.97 * lev)} USDT</b>} />
+          <Row label="Маржа (инвестиции)" value={`${fmtUsd(Number(inv))} USDT`} />
         </div>
-        <input type="range" className="range" min={1} max={Math.min(50, maxLev)} value={lev} onChange={(e) => setLev(Number(e.target.value))} />
-      </div>
+      )}
       <div className="flex flex-col gap-2">
         <div className="text-[11px] text-muted">
           Ребалансировка
@@ -478,13 +504,7 @@ export function MartingaleForm({ onSubmit, busy, initialSymbol }: FormProps) {
           { value: 'short', label: 'Шорт', className: '!text-down' },
         ]}
       />
-      <div>
-        <div className="flex justify-between text-[11px] mb-1">
-          <span className="text-muted">Плечо</span>
-          <span className="text-brand font-semibold">{lev}x</span>
-        </div>
-        <input type="range" className="range" min={1} max={max} value={lev} onChange={(e) => setLev(Number(e.target.value))} />
-      </div>
+      <LeverageControl value={lev} onChange={setLev} max={max} />
       <div className="grid grid-cols-2 gap-2">
         <NumInput label="1-й ордер" value={init} onChange={setInit} suffix="USDT" />
         <NumInput label="Шаг" value={step} onChange={setStep} suffix="%" step={0.1} />
