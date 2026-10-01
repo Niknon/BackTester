@@ -3,20 +3,26 @@ chcp 65001 >nul
 title BackTester
 cd /d "%~dp0"
 
-rem Node.js может быть установлен, но не прописан в PATH — ищем в стандартных папках
-where node >nul 2>nul
-if errorlevel 1 (
-  for %%D in ("%ProgramFiles%\nodejs" "%ProgramFiles(x86)%\nodejs" "%LOCALAPPDATA%\Programs\nodejs" "%APPDATA%\nvm\current" "%NVM_SYMLINK%") do (
-    if exist "%%~D\node.exe" set "PATH=%%~D;%PATH%"
-  )
-)
+rem Восстанавливаем системные пути (могли пропасть при ручной правке Path)
+set "PATH=%SystemRoot%\System32;%SystemRoot%;%SystemRoot%\System32\Wbem;%PATH%"
 
-where node >nul 2>nul
+rem Ищем node.exe: сначала в PATH, затем в стандартных папках установки
+set "NODEDIR="
+for %%D in ("%ProgramFiles%\nodejs" "%ProgramW6432%\nodejs" "%ProgramFiles(x86)%\nodejs" "%LOCALAPPDATA%\Programs\nodejs" "%APPDATA%\nvm\current" "%NVM_SYMLINK%" "C:\nodejs") do (
+  if not defined NODEDIR if exist "%%~D\node.exe" set "NODEDIR=%%~D"
+)
+if defined NODEDIR set "PATH=%NODEDIR%;%NODEDIR%\node_modules\npm\bin;%APPDATA%\npm;%PATH%"
+
+node -v >nul 2>nul
 if errorlevel 1 (
   echo.
-  echo [!] Не найден Node.js. Скачайте и установите его: https://nodejs.org  (кнопка LTS)
-  echo     Если Node.js уже установлен — перезагрузите компьютер и запустите этот файл ещё раз.
-  echo     После установки запустите этот файл ещё раз.
+  echo [!] Не удалось найти Node.js.
+  echo     Проверено: PATH, "%ProgramFiles%\nodejs", "%LOCALAPPDATA%\Programs\nodejs" и др.
+  echo.
+  echo     1. Откройте папку C:\Program Files\nodejs — есть ли там node.exe?
+  echo     2. Если нет — установите Node.js с https://nodejs.org ^(кнопка LTS^),
+  echo        галочку "Automatically install the necessary tools" НЕ ставьте.
+  echo     3. Если node.exe лежит в другой папке — пришлите путь к нему.
   echo.
   start https://nodejs.org
   pause
