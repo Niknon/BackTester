@@ -1093,8 +1093,10 @@ export class Exchange {
       let need: number;
       if (o.side === 'Buy') need = openQty * refPrice + fee;
       else {
+        // премия зачисляется на кошелёк, но и обязательство по опциону (mark) уменьшает капитал на столько же,
+        // поэтому премия не покрывает маржу: нужна полная IM (+ потеря на спреде, если продаём ниже mark)
         const m = shortOptionMargin(this.config.options, inst, q.underlyingPrice, q.mark);
-        need = openQty * Math.max(0, m.im - refPrice) + fee;
+        need = openQty * (m.im + Math.max(0, q.mark - refPrice)) + fee;
       }
       const avail = this.available(acc);
       if (need > avail + 1e-6) return this.reject(o, `Недостаточно средств: нужно ${need.toFixed(2)}, доступно ${Math.max(0, avail).toFixed(2)} USDT`);
@@ -1552,8 +1554,10 @@ export class Exchange {
 
   /** Кросс-ликвидация: закрываются все кросс-позиции и опционы аккаунта. */
   liquidateCross(acc: Account, reason = 'кросс-маржа') {
-    const s = this.core(acc);
-    const mm = s.mm;
+    // в страховой фонд уходит только поддерживающая маржа кросс-перпетуалов (разница между ценой
+    // ликвидации и банкротства); опционы закрываются по mark без дополнительного списания
+    let mm = 0;
+    for (const p of Object.values(acc.positions)) if (p.category === 'linear' && p.marginMode !== 'isolated' && p.size !== 0) mm += this.positionMM(p);
     const walletBefore = acc.walletBalance;
     const recStart = this.state.closedPnl.length;
     const symbols: string[] = [];

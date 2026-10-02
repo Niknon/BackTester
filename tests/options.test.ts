@@ -165,3 +165,51 @@ describe('Опционные стратегии', () => {
     expect(Object.values(ex.main.positions).filter((p) => p.category === 'option' && p.size !== 0).length).toBe(0);
   });
 });
+
+describe('Маржа и ликвидация проданных опционов', () => {
+  const warm: [number, number, number, number][] = Array.from({ length: 24 * 40 }, (_, i) => {
+    const p = 70000 * (1 + 0.02 * Math.sin(i / 5));
+    return [p, p * 1.004, p * 0.996, p];
+  });
+
+  it('премия не засчитывается в маржу: глубоко ITM-шорт сверх депозита отклоняется', () => {
+    const ex = mkExchange({ BTCUSDT: flat(90000, 5) }, { initialBalance: 10000 }, warm.map((b) => b.map((x) => (x * 9) / 7) as [number, number, number, number]));
+    const exp = ex.optionExpiries('BTC')[3];
+    const sym = optionSymbol('BTC', exp, 70000, 'C');
+    const o = ex.placeOrder({ category: 'option', symbol: sym, side: 'Sell', orderType: 'Market', qty: 0.5 });
+    expect(o.status).toBe('Rejected');
+    expect(o.rejectReason).toMatch(/Недостаточно средств/);
+  });
+
+  it('шорт колла: рост на 2000 даёт убыток ≈ 0.5 × рост mark, без ликвидации', () => {
+    const ex = mkExchange({ BTCUSDT: [...flat(70000, 3), [70000, 72000, 70000, 72000], ...flat(72000, 3)] }, { initialBalance: 10000 }, warm);
+    const sym = optionSymbol('BTC', ex.optionExpiries('BTC')[3], 70000, 'C');
+    expect(ex.placeOrder({ category: 'option', symbol: sym, side: 'Sell', orderType: 'Market', qty: 0.5 }).status).toBe('Filled');
+    const eq0 = ex.equity(ex.main);
+    const m0 = ex.optionMark(sym);
+    for (let i = 0; i < 5; i++) ex.step();
+    expect(ex.main.positions[sym]?.size).toBe(-0.5);
+    expect(ex.main.stats.liquidations).toBe(0);
+    const loss = eq0 - ex.equity(ex.main);
+    expect(Math.abs(loss - 0.5 * (ex.optionMark(sym) - m0))).toBeLessThan(1);
+    expect(loss).toBeGreaterThan(500);
+    expect(loss).toBeLessThan(1200);
+  });
+
+  it('ликвидация опционов не списывает весь капитал — только рыночный убыток', () => {
+    // депозит впритык: после сильного роста капитал падает ниже поддерживающей маржи
+    const ex = mkExchange({ BTCUSDT: [...flat(70000, 3), [70000, 82000, 70000, 82000], ...flat(82000, 3)] }, { initialBalance: 6000 }, warm);
+    const sym = optionSymbol('BTC', ex.optionExpiries('BTC')[3], 70000, 'C');
+    expect(ex.placeOrder({ category: 'option', symbol: sym, side: 'Sell', orderType: 'Market', qty: 0.5 }).status).toBe('Filled');
+    const w0 = ex.main.walletBalance;
+    for (let i = 0; i < 5; i++) ex.step();
+    expect(ex.main.stats.liquidations).toBe(1);
+    expect(ex.main.positions[sym]).toBeUndefined();
+    const rec = ex.state.closedPnl.at(-1)!;
+    // закрыто по mark: убыток = 0.5 × (mark − премия) ≈ 0.5 × 12000, а не весь депозит
+    expect(-rec.closedPnl).toBeLessThan(0.5 * 12500);
+    expect(ex.main.walletBalance).toBeGreaterThan(0);
+    // с кошелька ушла только стоимость выкупа опциона по mark (+ комиссия), без списания в страховой фонд
+    expect(Math.abs(w0 - ex.main.walletBalance - 0.5 * rec.exitPrice)).toBeLessThan(30);
+  });
+});

@@ -680,6 +680,23 @@ function OptionOrderPanel({
   const g = q.greeks;
   const be = inst.type === 'C' ? inst.strike + px : inst.strike - px;
   const premium = px * n;
+  // оценка цены базового актива, при которой новый шорт приведёт к ликвидации (прочие позиции — без изменений)
+  const liqS = (() => {
+    if (buy || !n) return NaN;
+    const sum = ex.summary(ex.main);
+    const eq0 = sum.equity - n * (q.mark - px) - fee;
+    const mmOther = sum.maintenanceMargin;
+    const dir = inst.type === 'C' ? 1 : -1;
+    for (let k = 1; k <= 300; k++) {
+      const x = S * (1 + dir * k * 0.002);
+      if (x <= 0) break;
+      const m = ex.optionQuote(draft.symbol, x)?.mark ?? 0;
+      const eq = eq0 - n * (m - q.mark);
+      const mm = mmOther + n * (m + ex.config.options.mmRate * x);
+      if (eq <= mm) return x;
+    }
+    return Infinity;
+  })();
   const right = inst.type === 'C' ? 'купить' : 'продать';
   const date = fmtShortDate(inst.expiry);
   const beTxt = fmtNum(be, autoDecimals(be));
@@ -806,6 +823,16 @@ function OptionOrderPanel({
         <Row label={buy ? 'Премия к оплате' : 'Премия к получению'} value={`${fmtUsd(premium, 4)} USDT`} />
         <Row label="Комиссия" value={`${fmtNum(fee, 4)} USDT`} />
         {margin && <Row label="Маржа шорта (IM)" value={`${fmtUsd(margin.im * n)} USDT`} />}
+        {!buy && n > 0 && (
+          <Row
+            label="Ликвидация (оценка)"
+            value={
+              <span className="text-brand" title="Цена базового актива, при которой капитал опустится до поддерживающей маржи (при текущей IV, остальные позиции без изменений)">
+                {Number.isFinite(liqS) ? `${base} ${inst.type === 'C' ? '≥' : '≤'} ${fmtNum(liqS, autoDecimals(liqS))}` : `дальше ±60%`}
+              </span>
+            }
+          />
+        )}
         <Row label="Безубыточность" value={beTxt} />
         <Row label="Доступно" value={`${fmtUsd(avail)} USDT`} />
       </div>
