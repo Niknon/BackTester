@@ -144,6 +144,28 @@ describe('Ликвидации', () => {
     expect(ex.state.closedPnl.at(-1)!.type).toBe('Liquidation');
   });
 
+  it('кросс-ликвидация: уведомление и закрытый PnL показывают реальный убыток', () => {
+    const ex = mkExchange({ BTCUSDT: [[100, 100, 100, 100], [100, 100, 80, 85], ...flat(85, 2)] }, { initialBalance: 1000 });
+    let loss = NaN;
+    ex.on((e) => {
+      if (e.type === 'liquidation') loss = e.loss;
+    });
+    ex.setLeverage(MAIN, 'BTCUSDT', 20);
+    ex.placeOrder({ category: 'linear', symbol: 'BTCUSDT', side: 'Buy', orderType: 'Market', qty: 150 });
+    const openFee = 150 * 100 * 0.00055;
+    const w0 = ex.main.walletBalance;
+    ex.step();
+    ex.step();
+    // весь кросс-капитал потерян — именно это и сообщается
+    close(loss, w0 - ex.main.walletBalance, 1e-6);
+    expect(loss).toBeGreaterThan(900);
+    const rec = ex.state.closedPnl.at(-1)!;
+    expect(rec.type).toBe('Liquidation');
+    // закрытый PnL = изменение кошелька при ликвидации + комиссия открытия
+    close(rec.closedPnl, -(w0 - ex.main.walletBalance) - openFee, 1e-6);
+    close(ex.main.stats.realisedPnl, rec.closedPnl, 1e-6);
+  });
+
   it('кросс-ликвидация обнуляет кросс-капитал', () => {
     const ex = mkExchange({ BTCUSDT: [[100, 100, 80, 85], ...flat(85, 2)] }, { initialBalance: 100 });
     ex.setLeverage(MAIN, 'BTCUSDT', 20);

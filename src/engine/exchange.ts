@@ -1522,33 +1522,46 @@ export class Exchange {
     const extra = -lossMargin - delta;
     acc.walletBalance += extra;
     const rec = this.state.closedPnl[this.state.closedPnl.length - 1];
-    if (rec && rec.symbol === symbol && rec.type === 'Liquidation') {
-      acc.stats.realisedPnl -= rec.closedPnl;
-      if (rec.closedPnl >= 0) {
-        acc.stats.wins--;
-        acc.stats.grossProfit -= rec.closedPnl;
-      } else {
-        acc.stats.losses--;
-        acc.stats.grossLoss += rec.closedPnl;
-      }
-      rec.closedPnl = -lossMargin - openFee + funding;
-      acc.stats.realisedPnl += rec.closedPnl;
-      acc.stats.losses++;
-      acc.stats.grossLoss += -rec.closedPnl;
-    }
+    if (rec && rec.symbol === symbol && rec.type === 'Liquidation') this.setRecordPnl(acc, rec, -lossMargin - openFee + funding);
     acc.stats.liquidations++;
     this.emit({ type: 'liquidation', accountId: acc.id, symbol, loss: lossMargin });
     this.onLiquidated(acc);
+  }
+
+  /** Изменить закрытый PnL записи с пересчётом статистики аккаунта (побед/поражений). */
+  private setRecordPnl(acc: Account, rec: ClosedPnlRecord, pnl: number) {
+    const st = acc.stats;
+    st.realisedPnl -= rec.closedPnl;
+    if (rec.closedPnl >= 0) {
+      st.wins--;
+      st.grossProfit -= rec.closedPnl;
+    } else {
+      st.losses--;
+      st.grossLoss += rec.closedPnl;
+    }
+    rec.closedPnl = pnl;
+    st.realisedPnl += pnl;
+    if (pnl >= 0) {
+      st.wins++;
+      st.grossProfit += pnl;
+    } else {
+      st.losses++;
+      st.grossLoss -= pnl;
+    }
   }
 
   /** Кросс-ликвидация: закрываются все кросс-позиции и опционы аккаунта. */
   liquidateCross(acc: Account, reason = 'кросс-маржа') {
     const s = this.core(acc);
     const mm = s.mm;
+    const walletBefore = acc.walletBalance;
+    const recStart = this.state.closedPnl.length;
+    const symbols: string[] = [];
     for (const pos of Object.values(acc.positions)) {
       if (pos.category === 'linear' && pos.marginMode === 'isolated') continue;
       const side: Side = pos.size > 0 ? 'Sell' : 'Buy';
       const qty = Math.abs(pos.size);
+      symbols.push(pos.symbol);
       if (pos.category === 'linear') this.fillLinear(acc, pos.symbol, side, qty, this.price(pos.symbol), false, 'Liquidation');
       else this.fillOption(acc, pos.symbol, side, qty, this.optionMark(pos.symbol), false, 'Liquidation');
     }
@@ -1556,11 +1569,20 @@ export class Exchange {
     const isoMargin = Object.values(acc.positions).reduce((x, p) => x + (p.category === 'linear' ? p.isolatedMargin : 0), 0);
     const crossLeft = acc.walletBalance - isoMargin;
     const fee = Math.max(0, Math.min(crossLeft, mm));
+    const walletAfterFills = acc.walletBalance;
     acc.walletBalance -= fee;
     if (acc.walletBalance - isoMargin < 0) acc.walletBalance = isoMargin; // страховой фонд покрывает дефицит
+    // списание в страховой фонд (или его покрытие дефицита) — часть результата ликвидированных позиций:
+    // распределяем по их записям закрытого PnL пропорционально объёму
+    const adj = acc.walletBalance - walletAfterFills;
+    const recs = this.state.closedPnl.slice(recStart).filter((r) => r.accountId === acc.id && r.type === 'Liquidation');
+    const notional = recs.reduce((x, r) => x + Math.abs(r.qty * r.exitPrice), 0);
+    if (adj !== 0 && recs.length)
+      for (const r of recs) this.setRecordPnl(acc, r, r.closedPnl + (notional > 0 ? (adj * Math.abs(r.qty * r.exitPrice)) / notional : adj / recs.length));
     acc.stats.liquidations++;
     for (const o of this.activeOrders(acc.id)) if (o.category !== 'spot') this.cancelOrder(o.id, 'Ликвидация');
-    this.emit({ type: 'liquidation', accountId: acc.id, symbol: reason, loss: Math.max(0, s.crossEquity) });
+    const label = symbols.length === 1 ? symbols[0] : symbols.length ? `${symbols.join(', ')} (${reason})` : reason;
+    this.emit({ type: 'liquidation', accountId: acc.id, symbol: label, loss: Math.max(0, walletBefore - acc.walletBalance) });
     this.onLiquidated(acc);
   }
 
