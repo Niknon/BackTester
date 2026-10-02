@@ -401,8 +401,7 @@ export function PriceChart({
     const execs = prefs.showExecutions
       ? ex.state.executions.filter(
           (e) =>
-            e.symbol === symbol &&
-            cats.includes(e.category) &&
+            (e.symbol === symbol ? cats.includes(e.category) : e.category === 'option' && e.accountId === accountId && ex.optionInstrument(e.symbol)?.underlying === symbol) &&
             (e.execType === 'Trade' || e.execType === 'Liquidation') &&
             (e.accountId === accountId || (prefs.showBotTrades && botAccs.has(e.accountId))) &&
             e.time >= (d.agg.t[0] ?? 0),
@@ -411,20 +410,28 @@ export function PriceChart({
     const sig = `${execs.length}|${execs.at(-1)?.id ?? ''}|${tf}|${d.key}|${mainTypeRef.current}`;
     if (sig !== markerSigRef.current) {
       markerSigRef.current = sig;
-      const byBar = new Map<string, { t: number; side: string; qty: number; n: number; liq: boolean; bot: boolean }>();
+      const byBar = new Map<string, { t: number; side: string; qty: number; n: number; liq: boolean; bot: boolean; opt?: 'C' | 'P' }>();
       for (const e of execs.slice(-800)) {
         const bt = bucketStart(e.time, tfMs);
-        const k = `${bt}|${e.side}|${e.accountId === accountId ? 'm' : 'b'}`;
+        const opt = e.category === 'option' ? ex.optionInstrument(e.symbol)?.type : undefined;
+        const k = `${bt}|${e.side}|${e.accountId === accountId ? 'm' : 'b'}|${opt ?? ''}`;
         const cur = byBar.get(k);
         if (cur) {
           cur.qty += e.qty;
           cur.n++;
           cur.liq ||= e.execType === 'Liquidation';
-        } else byBar.set(k, { t: bt, side: e.side, qty: e.qty, n: 1, liq: e.execType === 'Liquidation', bot: e.accountId !== accountId });
+        } else byBar.set(k, { t: bt, side: e.side, qty: e.qty, n: 1, liq: e.execType === 'Liquidation', bot: e.accountId !== accountId, opt });
       }
       const markers: SeriesMarker<Time>[] = [...byBar.values()]
         .sort((a, b) => a.t - b.t)
-        .map((m) => ({
+        .map((m) => m.opt ? ({
+          time: toTime(m.t),
+          position: m.side === 'Buy' ? 'belowBar' : 'aboveBar',
+          shape: 'circle',
+          color: '#a78bfa',
+          text: `${m.side === 'Buy' ? 'B' : 'S'} ${m.opt === 'C' ? 'Call' : 'Put'}${m.n > 1 ? ' ×' + m.n : ''}`,
+          size: 1,
+        } as SeriesMarker<Time>) : ({
           time: toTime(m.t),
           position: m.side === 'Buy' ? 'belowBar' : 'aboveBar',
           shape: m.side === 'Buy' ? 'arrowUp' : 'arrowDown',
@@ -437,6 +444,28 @@ export function PriceChart({
     // линии
     const want: ExtraLine[] = [];
     const acc = ex.state.accounts[accountId];
+    // опционные позиции на этот базовый актив: страйк, PnL, безубыточность
+    if (acc && category !== 'spot') {
+      for (const p of Object.values(acc.positions)) {
+        if (p.category !== 'option' || p.size === 0) continue;
+        const inst = ex.optionInstrument(p.symbol);
+        if (!inst || inst.underlying !== symbol || inst.expiry <= ex.now) continue;
+        const mark = ex.optionQuote(p.symbol)?.mark ?? 0;
+        const upnl = p.size * (mark - p.avgPrice);
+        const call = inst.type === 'C';
+        const days = (inst.expiry - ex.now) / 86_400_000;
+        want.push({
+          id: `opt:${p.symbol}`,
+          price: inst.strike,
+          color: call ? '#20b26c' : '#ef454a',
+          title: `${p.size > 0 ? 'Лонг' : 'Шорт'} ${call ? 'колл' : 'пут'} ${fmtNum(Math.abs(p.size), 4)} · ${upnl >= 0 ? '+' : ''}${fmtNum(upnl, 2)} · ${days >= 1 ? days.toFixed(1) + 'д' : (days * 24).toFixed(1) + 'ч'}`,
+          style: LineStyle.Dashed,
+          width: 2,
+        });
+        if (category !== 'option')
+          want.push({ id: `optbe:${p.symbol}`, price: call ? inst.strike + p.avgPrice : inst.strike - p.avgPrice, color: '#a78bfa', title: `Безубыт. ${call ? 'колла' : 'пута'}`, style: LineStyle.Dotted, axis: false });
+      }
+    }
     if (acc && category !== 'spot') {
       const pos = acc.positions[symbol];
       if (pos && pos.size !== 0 && pos.category === 'linear') {
@@ -736,7 +765,7 @@ export function PriceChart({
             className="absolute z-30 bg-panel2 border border-line2 rounded-md shadow-xl py-1 text-[12px] w-[290px]"
             style={{
               left: Math.max(0, Math.min(ctx.x, (wrapRef.current?.clientWidth ?? 400) - 295)),
-              top: Math.max(0, Math.min(ctx.y, (wrapRef.current?.clientHeight ?? 300) - (getAsset(symbol).hasOptions ? 330 : 140))),
+              top: Math.max(0, Math.min(ctx.y, (wrapRef.current?.clientHeight ?? 300) - (getAsset(symbol).hasOptions ? 390 : 140))),
             }}
           >
             <div className="px-3 py-1 text-[10px] text-muted num">Цена {fmtPrice(ctx.price, symbol)}</div>

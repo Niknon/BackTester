@@ -3,7 +3,7 @@ import { optionQtyStep } from '../../engine/options';
 import type { Side } from '../../engine/types';
 import { fmtShortDate, fmtNum, exactDecimals } from '../../lib/format';
 import { bump, toast, useSession } from '../../store/session';
-import { cx, usePersistent } from '../ui';
+import { cx, NumInput, usePersistent } from '../ui';
 import { dte } from '../options/OptionPositions';
 
 /**
@@ -14,7 +14,8 @@ export function ChartOptionMenu({ symbol, price, onDone }: { symbol: string; pri
   const ex = useSession((s) => s.ex)!;
   const spec = getAsset(symbol);
   const [expIdx, setExpIdx] = usePersistent<number>('bt-ctx-opt-exp', 3);
-  const [lots, setLots] = usePersistent<number>('bt-ctx-opt-lots', 10);
+  // количество — своё для каждого актива, вводится вручную или кнопками
+  const [qtyMap, setQtyMap] = usePersistent<Record<string, number>>('bt-ctx-opt-qty', {});
   if (!spec.hasOptions || spec.spotOnly || !ex.market.has(symbol)) return null;
   const expiries = ex.optionExpiries(spec.base);
   if (!expiries.length) return null;
@@ -24,12 +25,14 @@ export function ChartOptionMenu({ symbol, price, onDone }: { symbol: string; pri
   if (!chain?.rows.length) return null;
   const row = chain.rows.reduce((b, r) => (Math.abs(r.strike - price) < Math.abs(b.strike - price) ? r : b));
   const step = optionQtyStep(chain.S);
-  const qty = Number((step * lots).toPrecision(6));
+  const qty = qtyMap[spec.base] ?? Number((step * 10).toPrecision(6));
+  const setQty = (v: number) => setQtyMap({ ...qtyMap, [spec.base]: v });
   const kd = exactDecimals(row.strike);
 
   const open = (type: 'C' | 'P', side: Side) => {
     const q = type === 'C' ? row.call : row.put;
     const px = side === 'Buy' ? q.ask : q.bid;
+    if (!(qty >= step)) return toast('warn', 'Укажите количество', `Минимум ${step} ${spec.base}`);
     if (!(px > 0)) return toast('warn', 'Нет котировки', side === 'Buy' ? 'Ask = 0' : 'Bid = 0 — продать нельзя');
     const o = ex.placeOrder({ category: 'option', symbol: q.inst.symbol, side, orderType: 'Market', qty });
     if (o.status === 'Rejected') toast('error', 'Опцион не открыт', o.rejectReason);
@@ -69,13 +72,19 @@ export function ChartOptionMenu({ symbol, price, onDone }: { symbol: string; pri
             </option>
           ))}
         </select>
-        <select className="field !h-7 w-[110px] text-[11px]" value={lots} onChange={(e) => setLots(Number(e.target.value))} title="Количество контрактов">
-          {[1, 5, 10, 50, 100, 500].map((k) => (
-            <option key={k} value={k}>
-              {Number((step * k).toPrecision(6))} {spec.base}
-            </option>
-          ))}
-        </select>
+      </div>
+      <div className="flex flex-col gap-1">
+        <NumInput label="Кол-во" value={qty || ''} onChange={(v) => setQty(v === '' ? 0 : v)} step={step} suffix={spec.base} className="!h-7" />
+        <div className="flex gap-1">
+          {[1, 5, 10, 50, 100].map((k) => {
+            const v = Number((step * k).toPrecision(6));
+            return (
+              <button key={k} className={cx('chip flex-1 border border-line2 !px-0 text-[10px]', qty === v && 'active')} onClick={() => setQty(v)}>
+                {v}
+              </button>
+            );
+          })}
+        </div>
       </div>
       <div className="grid grid-cols-2 gap-1">
         {btn('C', 'Buy')}

@@ -176,16 +176,7 @@ export function OptionsPage() {
 
   // линии на графике: страйки позиций, безубыточность портфеля, выбранный в цепочке опцион
   const chartLines: ExtraLine[] = [];
-  for (const p of optPositions) {
-    const inst = ex.optionInstrument(p.symbol)!;
-    chartLines.push({
-      id: 'k' + p.symbol,
-      price: inst.strike,
-      color: inst.type === 'C' ? '#20b26c' : '#ef454a',
-      title: `${p.size > 0 ? 'Лонг' : 'Шорт'} ${inst.type === 'C' ? 'колл' : 'пут'} ${fmtNum(p.size, 3)} · ${dte(inst.expiry, ex.now)}`,
-      style: LineStyle.Dashed,
-    });
-  }
+  // страйки позиций рисует сам график (PriceChart)
   if (legs.length && Number.isFinite(S))
     breakevens(legs, S * 0.3, S * 1.7).forEach((b, i) =>
       chartLines.push({ id: 'be' + i, price: b, color: '#f7a600', title: 'Безубыточность', style: LineStyle.Dotted }),
