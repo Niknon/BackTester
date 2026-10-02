@@ -30,6 +30,7 @@ import { bump, toast, useSession, useTick, type IndicatorConfig } from '../../st
 import { useDrawings, type DrawTool } from '../../store/drawings';
 import { computeIndicator, heikinAshi, IND_META, indicatorLabel, type IndSeries } from './indicatorSeries';
 import { DrawingLayer } from './DrawingLayer';
+import { ChartOptionMenu } from './ChartOptionMenu';
 import { cx, Dropdown, Check, NumInput } from '../ui';
 
 const MAX_CANDLES = 6000;
@@ -138,6 +139,21 @@ export function PriceChart({
   const onPriceClickRef = useRef(onPriceClick);
   onPriceClickRef.current = onPriceClick;
   const [ctx, setCtx] = useState<{ x: number; y: number; price: number } | null>(null);
+  const ctxRef = useRef<HTMLDivElement>(null);
+  // меню закрывается кликом вне его или клавишей Esc
+  useEffect(() => {
+    if (!ctx) return;
+    const down = (e: MouseEvent) => {
+      if (ctxRef.current && !ctxRef.current.contains(e.target as Node)) setCtx(null);
+    };
+    const key = (e: KeyboardEvent) => e.key === 'Escape' && setCtx(null);
+    window.addEventListener('mousedown', down, true);
+    window.addEventListener('keydown', key);
+    return () => {
+      window.removeEventListener('mousedown', down, true);
+      window.removeEventListener('keydown', key);
+    };
+  }, [ctx]);
 
   const tfMs = intervalMs(tf);
   const chartType = prefs.chartType;
@@ -716,9 +732,12 @@ export function PriceChart({
         />
         {ctx && (
           <div
-            className="absolute z-30 bg-panel2 border border-line2 rounded-md shadow-xl py-1 text-[12px] min-w-[220px]"
-            style={{ left: Math.min(ctx.x, (wrapRef.current?.clientWidth ?? 400) - 230), top: Math.min(ctx.y, (wrapRef.current?.clientHeight ?? 300) - 130) }}
-            onMouseLeave={() => setCtx(null)}
+            ref={ctxRef}
+            className="absolute z-30 bg-panel2 border border-line2 rounded-md shadow-xl py-1 text-[12px] w-[290px]"
+            style={{
+              left: Math.max(0, Math.min(ctx.x, (wrapRef.current?.clientWidth ?? 400) - 295)),
+              top: Math.max(0, Math.min(ctx.y, (wrapRef.current?.clientHeight ?? 300) - (getAsset(symbol).hasOptions ? 330 : 140))),
+            }}
           >
             <div className="px-3 py-1 text-[10px] text-muted num">Цена {fmtPrice(ctx.price, symbol)}</div>
             {onPriceClickRef.current && (
@@ -765,6 +784,7 @@ export function PriceChart({
                 ✕ Удалить все алерты {symbol} ({ex.alerts(symbol).length})
               </button>
             )}
+            <ChartOptionMenu symbol={symbol} price={ctx.price} onDone={() => setCtx(null)} />
           </div>
         )}
         {legend && (
