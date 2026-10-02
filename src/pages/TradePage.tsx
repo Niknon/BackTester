@@ -35,7 +35,7 @@ export function TradePage({ category }: { category: Category }) {
           </div>
         </div>
         <div className="h-1 cursor-row-resize hover:bg-brand/40 rounded shrink-0" onMouseDown={onDown} title="Потяните, чтобы изменить высоту" />
-        <div style={{ height: h }} className="shrink-0 min-h-0">
+        <div style={{ height: `min(${h}px, 38vh)` }} className="shrink-0 min-h-0">
           <TradeBottomPanel category={category} symbol={sym} onSymbol={onSymbol} />
         </div>
       </div>

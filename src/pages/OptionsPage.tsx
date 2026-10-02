@@ -79,9 +79,10 @@ export function OptionsPage() {
   const expiries = loaded ? ex.optionExpiries(base) : [];
   const [expiry, setExpiry] = useState<number>(0);
   const [draft, setDraft] = useState<Draft | null>(null);
-  const [bottom, setBottom] = usePersistent<'positions' | 'orders' | 'builder' | 'history' | 'perps' | 'vol' | 'all' | 'strategies' | 'more'>('bt-opt-bottom-tab', 'positions', [
-    'strategies',
-    'more',
+  // режим основной области: торговля (цепочка/график + тикет) или опционные стратегии
+  const [mode, setMode] = usePersistent<'trade' | 'strategies'>('bt-opt-mode', 'trade', ['trade', 'strategies']);
+  const [bottomCollapsed, setBottomCollapsed] = usePersistent<boolean>('bt-opt-bottom-collapsed', false);
+  const [bottom, setBottom] = usePersistent<'positions' | 'orders' | 'builder' | 'history' | 'perps' | 'vol' | 'all'>('bt-opt-bottom-tab', 'positions', [
     'positions',
     'orders',
     'builder',
@@ -203,7 +204,7 @@ export function OptionsPage() {
     <div className="h-full flex flex-col gap-1 p-1">
       <div className="bg-panel rounded-lg shrink-0">
         <BaseTabs base={base} onBase={(b) => set({ optionBase: b })} />
-        <div className="flex items-center gap-6 px-4 py-2">
+        <div className="flex items-center gap-5 px-4 py-1.5 overflow-x-auto">
           <div>
             <div className="text-[10px] text-muted">Цена {underlying}</div>
             <div className="num text-[17px] font-bold">{fmtPrice(S, underlying)}</div>
@@ -213,16 +214,29 @@ export function OptionsPage() {
           <Info label="Модель IV" value={ex.config.options.ivSource === 'realized' ? `RV × ${ex.config.options.ivPremium}` : ex.config.options.ivSource === 'dvol' ? 'DVOL' : 'фикс.'} />
           <Info label="Портфель Δ / Γ" value={`${fmtNum(greeks.delta, 3)} / ${fmtNum(greeks.gamma, 5)}`} />
           <Info label="Вега / Тета (день)" value={<span>{fmtNum(greeks.vega, 2)} / <span className={pnlClass(greeks.theta)}>{fmtNum(greeks.theta, 2)}</span></span>} />
-          <span className="ml-auto text-[11px] text-dim text-right leading-tight">
+          <span className="ml-auto text-[11px] text-dim text-right leading-tight hidden 2xl:block">
             Клик по строке цепочки — выбрать колл (слева) или пут (справа).
             <br />
             Bid — цена продажи, Ask — цена покупки. Сторону выберите в тикете справа.
           </span>
-          <label className="flex items-center gap-2 text-muted text-[11px]">
+          <label className="ml-auto 2xl:ml-0 flex items-center gap-2 text-muted text-[11px] shrink-0">
             <input type="checkbox" className="checkbox" checked={greekCols} onChange={(e) => setGreekCols(e.target.checked)} /> Гамма/Вега/Тета в цепочке
           </label>
         </div>
-        <div className="flex gap-1 px-3 pb-2 overflow-x-auto">
+        <div className="flex gap-1 px-3 pb-2 overflow-x-auto items-center">
+          <Segmented
+            className="shrink-0 mr-2"
+            value={mode}
+            onChange={(m) => {
+              setMode(m);
+              // на невысоких экранах стратегиям нужно место: нижняя панель сворачивается (вкладки остаются видны)
+              if (m === 'strategies' && window.innerHeight < 950) setBottomCollapsed(true);
+            }}
+            options={[
+              { value: 'trade', label: 'Торговля' },
+              { value: 'strategies', label: 'Стратегии' },
+            ]}
+          />
           {expiries.map((e) => (
             <button key={e} className={cx('chip border border-line2 shrink-0', e === expiry && 'active !border-brand')} onClick={() => setExpiry(e)}>
               {fmtShortDate(e)} <span className="text-dim text-[10px]">{dte(e, ex.now)}</span>
@@ -230,16 +244,21 @@ export function OptionsPage() {
           ))}
         </div>
       </div>
+      {mode === 'strategies' ? (
+        <div className="flex-1 min-h-[260px] bg-panel rounded-lg overflow-hidden">
+          <StrategyPanel base={base} strikes={chain?.rows.map((r) => r.strike) ?? []} S={S} expiries={expiries} expiry={expiry} onExpiry={setExpiry} />
+        </div>
+      ) : (
       <div className="flex-1 min-h-0 flex gap-1">
         <div className="flex-1 min-w-0 flex flex-col gap-1">
           {view !== 'chain' && (
-            <div className="min-h-0 shrink-0" style={view === 'chart' ? { flex: 1 } : { height: splitRes.h }}>
+            <div className="min-h-0 shrink-0" style={view === 'chart' ? { flex: 1 } : { flex: `0 1 ${splitRes.h}px`, minHeight: 110 }}>
               <PriceChart symbol={underlying} tf={chartTf} onTfChange={(t) => set({ chartTf: t })} category="option" extraLines={chartLines} />
             </div>
           )}
           {view === 'split' && <div className="h-1 cursor-row-resize hover:bg-brand/40 rounded shrink-0" onMouseDown={splitRes.onDown} />}
           {view !== 'chart' && (
-            <div className="flex-1 min-h-0 bg-panel rounded-lg overflow-auto">
+            <div className="flex-1 min-h-[150px] bg-panel rounded-lg overflow-auto">
               <ChainTable chain={chain} S={S} base={base} greekCols={greekCols} onPick={setDraft} draft={draft} strikeDec={strikeDec} />
             </div>
           )}
@@ -261,17 +280,19 @@ export function OptionsPage() {
           />
         </div>
       </div>
+      )}
       <div className="h-1 cursor-row-resize hover:bg-brand/40 rounded shrink-0" onMouseDown={bottomRes.onDown} />
       <div
         className="shrink-0 bg-panel rounded-lg flex flex-col overflow-hidden"
-        style={{ height: bottom === 'strategies' || bottom === 'more' ? Math.max(bottomRes.h, 440) : bottomRes.h }}
+        style={{ height: bottomCollapsed ? 37 : `min(${bottomRes.h}px, 28vh)` }}
       >
         <Tabs
           value={bottom}
-          onChange={setBottom}
+          onChange={(t) => {
+            setBottom(t);
+            setBottomCollapsed(false);
+          }}
           tabs={[
-            { value: 'strategies', label: 'Опционные стратегии' },
-            { value: 'more', label: 'Другие стратегии' },
             { value: 'positions', label: `Позиции и профиль (${optPositions.length})` },
             { value: 'all', label: `Все позиции (${positionsCount(ex)})` },
             { value: 'orders', label: `Ордера (${optOrders.length})` },
@@ -281,7 +302,15 @@ export function OptionsPage() {
             { value: 'vol', label: 'Улыбка и структура IV' },
           ]}
           right={
-            <Segmented
+            <>
+            <button
+              className="btn btn-sm btn-ghost"
+              title={bottomCollapsed ? 'Развернуть нижнюю панель' : 'Свернуть нижнюю панель — больше места для цепочки и стратегий'}
+              onClick={() => setBottomCollapsed(!bottomCollapsed)}
+            >
+              {bottomCollapsed ? '▴ Развернуть' : '▾ Свернуть'}
+            </button>
+            {mode === 'trade' && <Segmented
               size="sm"
               value={view}
               onChange={(v) => {
@@ -293,7 +322,8 @@ export function OptionsPage() {
                 { value: 'split', label: 'Цепочка + график' },
                 { value: 'chart', label: 'График' },
               ]}
-            />
+            />}
+            </>
           }
         />
         <div className="flex-1 min-h-0 overflow-auto">
@@ -309,9 +339,7 @@ export function OptionsPage() {
           )}
           {bottom === 'orders' && <OptionOrders />}
           {bottom === 'all' && <AllPositions />}
-          {(bottom === 'strategies' || bottom === 'more') && (
-            <StrategyPanel key={bottom} group={bottom === 'strategies' ? 'main' : 'more'} base={base} strikes={chain?.rows.map((r) => r.strike) ?? []} S={S} expiries={expiries} expiry={expiry} onExpiry={setExpiry} />
-          )}
+
           {bottom === 'builder' && (
             <Builder
               legs={builder}

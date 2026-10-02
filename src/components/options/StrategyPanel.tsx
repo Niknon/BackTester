@@ -33,7 +33,6 @@ function MiniPayoff({ def }: { def: StrategyDef }) {
 }
 
 export function StrategyPanel({
-  group,
   base,
   strikes,
   S,
@@ -41,7 +40,6 @@ export function StrategyPanel({
   expiry,
   onExpiry,
 }: {
-  group: 'main' | 'more';
   base: string;
   strikes: number[];
   S: number;
@@ -51,6 +49,8 @@ export function StrategyPanel({
 }) {
   useTick();
   const ex = useSession((s) => s.ex)!;
+  // «Основные» и «Другие стратегии» — переключатель над списком (запоминается)
+  const [group, setGroup] = usePersistent<'main' | 'more'>('bt-strat-group', 'main', ['main', 'more']);
   const list = STRATEGIES.filter((d) => d.group === group);
   const [key, setKey] = usePersistent<string>(`bt-strat-${group}`, list[0].key);
   const [viewF, setViewF] = useState<StrategyView | 'all'>('all');
@@ -130,8 +130,17 @@ export function StrategyPanel({
   const d = autoDecimals(S);
 
   return (
-    <div className="grid grid-cols-[280px_1fr_430px] h-full min-h-0">
+    <div className="grid grid-cols-[240px_minmax(360px,1fr)_minmax(300px,480px)] h-full min-h-0">
       <div className="border-r border-line flex flex-col min-h-0">
+        <div className="p-2 pb-0">
+          <div className="flex bg-panel2 rounded-md p-0.5 gap-0.5">
+            {(['main', 'more'] as const).map((g) => (
+              <button key={g} className={cx('flex-1 rounded-[5px] h-6 text-[11px] whitespace-nowrap', group === g ? 'bg-panel3 text-text font-semibold' : 'text-muted hover:text-text')} onClick={() => setGroup(g)}>
+                {g === 'main' ? 'Основные' : 'Другие'} ({STRATEGIES.filter((d) => d.group === g).length})
+              </button>
+            ))}
+          </div>
+        </div>
         <div className="flex flex-wrap gap-1 p-2 border-b border-line">
           {(['all', 'bull', 'bear', 'neutral', 'vol'] as const).map((v) => (
             <button key={v} className={cx('chip !px-1.5 text-[10px]', viewF === v && 'active')} onClick={() => setViewF(v)}>
@@ -153,12 +162,12 @@ export function StrategyPanel({
           ))}
         </div>
       </div>
-      <div className="p-3 flex flex-col gap-2 overflow-auto min-h-0">
+      <div className="p-2.5 flex flex-col gap-2 overflow-auto min-h-0">
         <div>
           <div className="font-semibold text-[14px]">{def.name}</div>
           <div className="text-[11px] text-muted">{def.desc}</div>
         </div>
-        <div className="grid grid-cols-4 gap-2">
+        <div className="grid grid-cols-2 xl:grid-cols-4 gap-2">
           <label className="field">
             <span className="lbl">{def.calendar ? 'Ближняя' : 'Экспирация'}</span>
             <select value={expiry} onChange={(e) => onExpiry(Number(e.target.value))}>
@@ -183,7 +192,7 @@ export function StrategyPanel({
           ) : (
             <div />
           )}
-          <div className="flex gap-1 col-span-2">
+          <div className="flex gap-1 col-span-2 xl:col-span-2">
             <button className="btn h-8 w-8 p-0" onClick={() => setCenterOff(centerOff - 1)} title="Сдвинуть страйки ниже">
               ◀
             </button>
@@ -255,16 +264,22 @@ export function StrategyPanel({
           <Row label="Дельта стратегии" value={fmtNum(delta, 3)} />
           <Row label="Ног" value={String(res.legs.length)} />
         </div>
-        <button className="btn btn-brand h-10" disabled={!valid} onClick={run}>
+        <button
+          className="btn btn-brand h-9 shrink-0 sticky bottom-0 shadow-[0_-8px_12px_#14151a]"
+          disabled={!valid}
+          onClick={run}
+          title="Все ноги исполняются сразу по рыночной цене (покупки по Ask, продажи по Bid). Если одна из ног не проходит — уже исполненные автоматически закрываются."
+        >
           Открыть «{def.name}» по рынку
         </button>
-        <div className="text-[10px] text-dim">Все ноги исполняются сразу по рыночной цене (покупки по Ask, продажи по Bid). Если одна из ног не проходит — уже исполненные автоматически закрываются.</div>
       </div>
       <div className="border-l border-line p-2 flex flex-col gap-1 min-h-0 overflow-auto">
         {valid && stats ? (
           <>
             <div className="text-[11px] text-muted">Профиль выплат {def.calendar ? `на ближнюю экспирацию (${fmtShortDate(expiry)})` : 'на экспирации'} и сейчас (T+0)</div>
-            <PayoffChart legs={payoff} spot={S} height={200} range={0.25} />
+            <div className="shrink-0">
+              <PayoffChart legs={payoff} spot={S} height={170} range={0.25} />
+            </div>
             <div className="grid grid-cols-2 gap-x-3 text-[11px]">
               <Row label="Макс. прибыль" value={<span className="text-up">{bound(stats.maxP)}</span>} />
               <Row label="Макс. убыток" value={<span className="text-down">{bound(stats.minP)}</span>} />

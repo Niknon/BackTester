@@ -17,7 +17,7 @@ const NAV: { page: Page; label: string }[] = [
 
 function Logo() {
   return (
-    <div className="flex items-center gap-2 pr-4 select-none">
+    <div className="flex items-center gap-2 pr-2 xl:pr-4 select-none shrink-0">
       <svg width="26" height="26" viewBox="0 0 32 32">
         <rect width="32" height="32" rx="7" fill="#f7a600" />
         <path d="M8 22 L13 14 L17 18 L24 9" stroke="#101014" strokeWidth="3" fill="none" strokeLinecap="round" strokeLinejoin="round" />
@@ -26,7 +26,7 @@ function Logo() {
         <div className="font-bold text-[14px] tracking-wide">
           BACK<span className="text-brand">TESTER</span>
         </div>
-        <div className="text-[9px] text-dim -mt-0.5">симулятор биржи на истории</div>
+        <div className="text-[9px] text-dim -mt-0.5 hidden 2xl:block">симулятор биржи на истории</div>
       </div>
     </div>
   );
@@ -40,10 +40,12 @@ function EquityBadge() {
   const base = ex.config.initialBalance;
   const pnl = eq.total - base;
   return (
-    <div className="flex items-center gap-4 text-right">
+    <div className="flex items-center gap-3 text-right whitespace-nowrap">
       <div>
         <div className="text-[10px] text-muted">Общий капитал</div>
-        <div className="num font-semibold">{fmtUsd(eq.total)} USDT</div>
+        <div className="num font-semibold">
+          {fmtUsd(eq.total)} <span className="hidden xl:inline">USDT</span>
+        </div>
       </div>
       <div>
         <div className="text-[10px] text-muted">PnL сессии</div>
@@ -61,24 +63,24 @@ export function TopNav() {
   const set = useSession((s) => s.set);
   const savedAt = useSession((s) => s.savedAt);
   return (
-    <header className="h-12 flex items-center px-4 border-b border-line bg-panel shrink-0 gap-2">
+    <header className="h-12 flex items-center px-3 border-b border-line bg-panel shrink-0 gap-1 xl:gap-2 overflow-hidden">
       <Logo />
       {hasEx &&
         NAV.map((n) => (
           <button
             key={n.page}
             onClick={() => set({ page: n.page })}
-            className={cx('px-3 h-12 text-[13px] border-b-2 transition-colors', page === n.page ? 'border-brand text-text font-semibold' : 'border-transparent text-muted hover:text-text')}
+            className={cx('px-2 xl:px-3 h-12 text-[13px] whitespace-nowrap border-b-2 transition-colors', page === n.page ? 'border-brand text-text font-semibold' : 'border-transparent text-muted hover:text-text')}
           >
             {n.label}
           </button>
         ))}
-      <div className="ml-auto flex items-center gap-3">
+      <div className="ml-auto flex items-center gap-2 xl:gap-3 shrink-0">
         {hasEx && <PositionsButton />}
         {hasEx && <EquityBadge />}
         {hasEx && (
           <button className="btn btn-ghost btn-sm" onClick={() => saveSession()} title={savedAt ? `Сохранено ${new Date(savedAt).toLocaleTimeString('ru-RU')}` : 'Сохранить сессию в браузере'}>
-            💾 Сохранить
+            💾 <span className="hidden xl:inline">Сохранить</span>
           </button>
         )}
         <button className={cx('btn btn-sm', page === 'setup' || !hasEx ? 'btn-brand' : 'btn-ghost')} onClick={() => set({ page: 'setup' })}>
