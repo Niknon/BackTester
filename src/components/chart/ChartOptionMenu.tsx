@@ -1,5 +1,5 @@
 import { getAsset } from '../../data/assets';
-import { optionQtyStep } from '../../engine/options';
+import { optionQtyStep, optionSymbol, strikeStep, yearsTo } from '../../engine/options';
 import type { Side } from '../../engine/types';
 import { fmtShortDate, fmtNum, exactDecimals } from '../../lib/format';
 import { bump, toast, useSession } from '../../store/session';
@@ -21,10 +21,17 @@ export function ChartOptionMenu({ symbol, price, onDone }: { symbol: string; pri
   if (!expiries.length) return null;
   const idx = Math.max(0, Math.min(expIdx, expiries.length - 1));
   const expiry = expiries[idx];
-  const chain = ex.optionChain(spec.base, expiry);
-  if (!chain?.rows.length) return null;
-  const row = chain.rows.reduce((b, r) => (Math.abs(r.strike - price) < Math.abs(b.strike - price) ? r : b));
-  const step = optionQtyStep(chain.S);
+  const S = ex.price(symbol);
+  if (!Number.isFinite(S) || !(price > 0)) return null;
+  // страйк — уровень клика, округлённый до шага страйков этой экспирации (не ограничиваемся
+  // видимой цепочкой: иначе дальние уровни «прилипали» к краю цепочки или к страйку открытой позиции)
+  const kStep = strikeStep(S, yearsTo(expiry, ex.now));
+  const strike = Math.max(kStep, Number((Math.round(price / kStep) * kStep).toPrecision(10)));
+  const call = ex.optionQuote(optionSymbol(spec.base, expiry, strike, 'C'));
+  const put = ex.optionQuote(optionSymbol(spec.base, expiry, strike, 'P'));
+  if (!call || !put) return null;
+  const row = { strike, call, put };
+  const step = optionQtyStep(S);
   const qty = qtyMap[spec.base] ?? Number((step * 10).toPrecision(6));
   const setQty = (v: number) => setQtyMap({ ...qtyMap, [spec.base]: v });
   const kd = exactDecimals(row.strike);
@@ -62,7 +69,7 @@ export function ChartOptionMenu({ symbol, price, onDone }: { symbol: string; pri
     <div className="border-t border-line mt-1 pt-1.5 px-2 pb-1 flex flex-col gap-1.5" onMouseDown={(e) => e.stopPropagation()}>
       <div className="text-[10px] text-muted px-1">
         Опцион по рынку · страйк <span className="text-text num font-semibold">{fmtNum(row.strike, kd)}</span>
-        {Math.abs(row.strike - price) / price > 0.001 && <span> (ближайший к уровню)</span>}
+        {Math.abs(row.strike - price) / price > 0.001 && <span> (уровень округлён до шага страйков {fmtNum(kStep, exactDecimals(kStep))})</span>}
       </div>
       <div className="flex gap-1">
         <select className="field !h-7 flex-1 text-[11px]" value={idx} onChange={(e) => setExpIdx(Number(e.target.value))}>
