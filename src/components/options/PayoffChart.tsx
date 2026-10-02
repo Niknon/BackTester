@@ -12,6 +12,8 @@ export interface PayoffLeg {
   entry: number;
   /** текущая теоретическая стоимость как функция цены базового актива (T+0) */
   valueNow?: (S: number) => number;
+  /** стоимость на дату расчёта профиля (для дальних ног календарей); иначе — внутренняя стоимость */
+  valueAtExpiry?: (S: number) => number;
 }
 
 export function payoffAtExpiry(legs: PayoffLeg[], S: number) {
@@ -19,7 +21,7 @@ export function payoffAtExpiry(legs: PayoffLeg[], S: number) {
   for (const l of legs) {
     if (l.type === 'F') v += l.qty * (S - l.entry);
     else {
-      const intr = l.type === 'C' ? Math.max(0, S - l.strike) : Math.max(0, l.strike - S);
+      const intr = l.valueAtExpiry ? l.valueAtExpiry(S) : l.type === 'C' ? Math.max(0, S - l.strike) : Math.max(0, l.strike - S);
       v += l.qty * (intr - l.entry);
     }
   }

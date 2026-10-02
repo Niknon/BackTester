@@ -11,6 +11,7 @@ import { fmtNum, fmtPct, fmtPrice, fmtShortDate, fmtTime, fmtUsd, pnlClass, auto
 import { Badge, cx, Empty, NumInput, Row, Segmented, Tabs, usePersistent, useResizable } from '../components/ui';
 import { PositionsTable } from '../components/trade/BottomPanel';
 import { AllPositions, positionsCount } from '../components/positions/AllPositions';
+import { StrategyPanel } from '../components/options/StrategyPanel';
 import { LineStyle } from 'lightweight-charts';
 import { PayoffChart, breakevens, payoffAtExpiry, type PayoffLeg } from '../components/options/PayoffChart';
 import { PriceChart, type ExtraLine } from '../components/chart/PriceChart';
@@ -78,7 +79,9 @@ export function OptionsPage() {
   const expiries = loaded ? ex.optionExpiries(base) : [];
   const [expiry, setExpiry] = useState<number>(0);
   const [draft, setDraft] = useState<Draft | null>(null);
-  const [bottom, setBottom] = usePersistent<'positions' | 'orders' | 'builder' | 'history' | 'perps' | 'vol' | 'all'>('bt-opt-bottom-tab', 'positions', [
+  const [bottom, setBottom] = usePersistent<'positions' | 'orders' | 'builder' | 'history' | 'perps' | 'vol' | 'all' | 'strategies' | 'more'>('bt-opt-bottom-tab', 'positions', [
+    'strategies',
+    'more',
     'positions',
     'orders',
     'builder',
@@ -259,11 +262,16 @@ export function OptionsPage() {
         </div>
       </div>
       <div className="h-1 cursor-row-resize hover:bg-brand/40 rounded shrink-0" onMouseDown={bottomRes.onDown} />
-      <div className="shrink-0 bg-panel rounded-lg flex flex-col overflow-hidden" style={{ height: bottomRes.h }}>
+      <div
+        className="shrink-0 bg-panel rounded-lg flex flex-col overflow-hidden"
+        style={{ height: bottom === 'strategies' || bottom === 'more' ? Math.max(bottomRes.h, 440) : bottomRes.h }}
+      >
         <Tabs
           value={bottom}
           onChange={setBottom}
           tabs={[
+            { value: 'strategies', label: 'Опционные стратегии' },
+            { value: 'more', label: 'Другие стратегии' },
             { value: 'positions', label: `Позиции и профиль (${optPositions.length})` },
             { value: 'all', label: `Все позиции (${positionsCount(ex)})` },
             { value: 'orders', label: `Ордера (${optOrders.length})` },
@@ -301,6 +309,9 @@ export function OptionsPage() {
           )}
           {bottom === 'orders' && <OptionOrders />}
           {bottom === 'all' && <AllPositions />}
+          {(bottom === 'strategies' || bottom === 'more') && (
+            <StrategyPanel key={bottom} group={bottom === 'strategies' ? 'main' : 'more'} base={base} strikes={chain?.rows.map((r) => r.strike) ?? []} S={S} expiries={expiries} expiry={expiry} onExpiry={setExpiry} />
+          )}
           {bottom === 'builder' && (
             <Builder
               legs={builder}

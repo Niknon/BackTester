@@ -131,3 +131,37 @@ describe('Торговля опционами', () => {
     expect(ex.account(MAIN)).toBeTruthy();
   });
 });
+
+describe('Опционные стратегии', () => {
+  it('железный кондор: 4 ноги одним действием, кредит, позиции открыты', async () => {
+    const { STRATEGIES, resolveStrategy, openStrategy } = await import('../src/engine/optionStrategies');
+    const ex = mkExchange({ BTCUSDT: flat(100000, 48) }, { initialBalance: 100_000 }, flat(100000, 24 * 40));
+    const exp = ex.optionExpiries('BTC')[3];
+    const chain = ex.optionChain('BTC', exp);
+    const strikes = chain.rows.map((r) => r.strike);
+    const atm = strikes.reduce((b, k, i) => (Math.abs(k - 100000) < Math.abs(strikes[b] - 100000) ? i : b), 0);
+    const def = STRATEGIES.find((d) => d.key === 'iron_condor')!;
+    const r = resolveStrategy(ex, def, 'BTC', strikes, atm, 2, exp, exp, 0.1);
+    expect(r.error).toBeUndefined();
+    expect(r.legs.length).toBe(4);
+    const credit = r.legs.reduce((s, l) => s + (l.side === 'Sell' ? 1 : -1) * l.price * l.qty, 0);
+    expect(credit).toBeGreaterThan(0);
+    const res = openStrategy(ex, r.legs);
+    expect(res.ok).toBe(true);
+    expect(Object.values(ex.main.positions).filter((p) => p.category === 'option').length).toBe(4);
+  });
+
+  it('если нога отклонена — исполненные ноги откатываются', async () => {
+    const { STRATEGIES, resolveStrategy, openStrategy } = await import('../src/engine/optionStrategies');
+    const ex = mkExchange({ BTCUSDT: flat(100000, 48) }, { initialBalance: 200 }, flat(100000, 24 * 40));
+    const exp = ex.optionExpiries('BTC')[3];
+    const strikes = ex.optionChain('BTC', exp).rows.map((r) => r.strike);
+    const atm = strikes.reduce((b, k, i) => (Math.abs(k - 100000) < Math.abs(strikes[b] - 100000) ? i : b), 0);
+    // при депозите 200 USDT маржи под проданные коллы не хватит — продажа будет отклонена
+    const def = STRATEGIES.find((d) => d.key === 'call_ratio')!;
+    const r = resolveStrategy(ex, def, 'BTC', strikes, atm, 1, exp, exp, 0.01);
+    const res = openStrategy(ex, r.legs);
+    expect(res.ok).toBe(false);
+    expect(Object.values(ex.main.positions).filter((p) => p.category === 'option' && p.size !== 0).length).toBe(0);
+  });
+});
