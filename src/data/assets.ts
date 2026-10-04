@@ -51,6 +51,10 @@ export interface AssetSpec {
   bybitCategory?: 'linear' | 'spot';
   /** тикер базового актива на фондовом рынке (для xStocks) */
   underlying?: string;
+  /** тикер Yahoo Finance (длинная история акций/ETF/индексов/сырья), null — нет */
+  yahoo?: string | null;
+  /** опционы доступны в симуляторе, хотя на Bybit их нет (модельные, по той же модели IV) */
+  simOptions?: boolean;
   /** подраздел TradFi: акции, ETF, индексы, сырьё */
   sector?: 'stock' | 'etf' | 'index' | 'commodity';
   /** синтетика: в выходные рынок закрыт (цена почти не двигается) */
@@ -112,6 +116,7 @@ const T = (
   refVol,
   okx: `${base}-USDT-SWAP`,
   binance: null,
+  yahoo: base,
 });
 
 /** TradFi USDT-перпетуал Bybit (фьючерс с плечом на акцию, ETF, индекс или сырьё); фолбэк — тот же перпетуал OKX. */
@@ -137,6 +142,8 @@ const TF = (
   refVol,
   okx: `${base}-USDT-SWAP`,
   binance: null,
+  yahoo: base,
+  simOptions: true,
   sector,
   calmWeekends: true,
   ...extra,
@@ -163,6 +170,7 @@ const X = (ticker: string, name: string, refPrice: number, refVol: number, okx: 
   spotOnly: true,
   bybitCategory: 'spot',
   underlying: ticker,
+  yahoo: ticker,
 });
 
 /** Токен золота на споте (1 токен ≈ 1 тройская унция). */
@@ -180,6 +188,7 @@ const G = (base: string, name: string, okx: string): AssetSpec => ({
   refVol: 0.18,
   okx,
   binance: null,
+  yahoo: 'GC=F',
   spotOnly: true,
   bybitCategory: 'spot',
 });
@@ -197,10 +206,10 @@ export const ASSETS: AssetSpec[] = [
   T('NVDA', 'NVIDIA', 0.01, 50, 228, 0.45),
   T('TSLA', 'Tesla', 0.01, 25, 355, 0.6),
   T('QQQ', 'Invesco QQQ (Nasdaq-100)', 0.01, 50, 740, 0.2),
-  T('SPCX', 'SpaceX', 0.01, 50, 150, 0.6),
+  { ...T('SPCX', 'SpaceX', 0.01, 50, 150, 0.6), yahoo: null },
   T('SOXL', 'Direxion Semi Bull 3X', 0.01, 20, 148, 0.9),
   T('MU', 'Micron Technology', 0.01, 50, 1070, 0.55),
-  T('SKHY', 'SK Hynix', 0.01, 50, 187, 0.55),
+  { ...T('SKHY', 'SK Hynix', 0.01, 50, 187, 0.55), yahoo: null },
   T('SNDK', 'SanDisk', 0.1, 50, 1730, 0.65),
   // ── TradFi-перпетуалы Bybit: акции ──
   TF('AAPL', 'Apple', 'stock', 25, 330, 0.3),
@@ -230,7 +239,7 @@ export const ASSETS: AssetSpec[] = [
   TF('CRCL', 'Circle', 'stock', 50, 83, 0.9),
   TF('MARA', 'MARA Holdings', 'stock', 10, 11.2, 0.9),
   TF('RIVN', 'Rivian', 'stock', 20, 14.8, 0.7),
-  TF('BRKB', 'Berkshire Hathaway B', 'stock', 20, 502, 0.2),
+  TF('BRKB', 'Berkshire Hathaway B', 'stock', 20, 502, 0.2, { yahoo: 'BRK-B' }),
   TF('LLY', 'Eli Lilly', 'stock', 20, 1156, 0.35),
   TF('UNH', 'UnitedHealth', 'stock', 20, 366, 0.35),
   TF('JNJ', 'Johnson & Johnson', 'stock', 10, 258, 0.18),
@@ -247,16 +256,16 @@ export const ASSETS: AssetSpec[] = [
   TF('XLE', 'Energy Select Sector SPDR', 'etf', 20, 63, 0.25),
   TF('XBI', 'SPDR S&P Biotech', 'etf', 20, 155, 0.35),
   TF('USO', 'United States Oil Fund', 'etf', 20, 150, 0.35),
-  TF('US500', 'Индекс S&P 500', 'index', 20, 7673, 0.16),
-  TF('US100', 'Индекс Nasdaq-100', 'index', 20, 30557, 0.2),
+  TF('US500', 'Индекс S&P 500', 'index', 20, 7673, 0.16, { yahoo: '^GSPC' }),
+  TF('US100', 'Индекс Nasdaq-100', 'index', 20, 30557, 0.2, { yahoo: '^NDX' }),
   // ── TradFi-перпетуалы: сырьё ──
-  TF('XAU', 'Золото (унция)', 'commodity', 100, 4179, 0.18),
-  TF('XAG', 'Серебро (унция)', 'commodity', 50, 61, 0.3),
-  TF('XPT', 'Платина (унция)', 'commodity', 50, 1721, 0.3),
-  TF('XPD', 'Палладий (унция)', 'commodity', 50, 1187, 0.35),
-  TF('XCU', 'Медь (фунт)', 'commodity', 50, 6.59, 0.25, { tickSize: 0.0001, qtyStep: 0.1, minQty: 0.1 }),
-  TF('CL', 'Нефть WTI (баррель)', 'commodity', 50, 92.8, 0.35),
-  TF('NG', 'Природный газ (MMBtu)', 'commodity', 50, 2.95, 0.6, { tickSize: 0.001, qtyStep: 1, minQty: 1 }),
+  TF('XAU', 'Золото (унция)', 'commodity', 100, 4179, 0.18, { yahoo: 'GC=F' }),
+  TF('XAG', 'Серебро (унция)', 'commodity', 50, 61, 0.3, { yahoo: 'SI=F' }),
+  TF('XPT', 'Платина (унция)', 'commodity', 50, 1721, 0.3, { yahoo: 'PL=F' }),
+  TF('XPD', 'Палладий (унция)', 'commodity', 50, 1187, 0.35, { yahoo: 'PA=F' }),
+  TF('XCU', 'Медь (фунт)', 'commodity', 50, 6.59, 0.25, { tickSize: 0.0001, qtyStep: 0.1, minQty: 0.1, yahoo: 'HG=F' }),
+  TF('CL', 'Нефть WTI (баррель)', 'commodity', 50, 92.8, 0.35, { yahoo: 'CL=F' }),
+  TF('NG', 'Природный газ (MMBtu)', 'commodity', 50, 2.95, 0.6, { tickSize: 0.001, qtyStep: 1, minQty: 1, yahoo: 'NG=F' }),
   // ── Популярные USDT-перпетуалы ──
   C('BNB', 'BNB', false, 0.1, 0.01, 75, 760, 0.45),
   C('ADA', 'Cardano', false, 0.0001, 1, 75, 0.245, 0.8),
@@ -376,6 +385,41 @@ export function getAsset(symbol: string): AssetSpec {
 
 export function hasAsset(symbol: string) {
   return BY_SYMBOL.has(symbol);
+}
+
+/** Можно ли торговать опционами на этот актив в симуляторе (Bybit или модельные). */
+export function optionsAvailable(spec: AssetSpec) {
+  return !spec.spotOnly && (spec.hasOptions || !!spec.simOptions);
+}
+
+/** Добавить в каталог акцию/ETF США по тикеру Yahoo (USDT-перпетуал в симуляторе, история с Yahoo). */
+export function registerUsStock(ticker: string, name = ticker): AssetSpec {
+  const t = ticker.trim().toUpperCase();
+  const base = t.replace(/[^A-Z0-9]/g, '');
+  const sym = `${base}USDT`;
+  if (hasAsset(sym) && ASSETS.some((a) => a.symbol === sym)) return getAsset(sym);
+  const spec = TF(base, name, 'stock', 20, 100, 0.4, { yahoo: t, okx: null });
+  registerAsset(spec);
+  // запоминаем, чтобы символ был известен и после перезагрузки страницы (сохранённые сессии)
+  try {
+    const list: string[] = JSON.parse(localStorage.getItem(US_STOCKS_KEY) || '[]');
+    if (!list.includes(t)) localStorage.setItem(US_STOCKS_KEY, JSON.stringify([...list, t]));
+  } catch {
+    /* нет localStorage (тесты) */
+  }
+  return spec;
+}
+
+const US_STOCKS_KEY = 'bt-us-stocks';
+
+/** Восстановить добавленные пользователем акции США. */
+export function restoreUsStocks() {
+  try {
+    const list: string[] = JSON.parse(localStorage.getItem(US_STOCKS_KEY) || '[]');
+    for (const t of list) if (typeof t === 'string' && t) registerUsStock(t);
+  } catch {
+    /* ignore */
+  }
 }
 
 /** Есть ли у инструмента USDT-перпетуал (деривативы, фьючерсные боты, опционы). */

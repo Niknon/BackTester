@@ -1664,36 +1664,38 @@ export class Exchange {
     }
   }
 
-  private processSegment(symbol: string, from: number, to: number) {
+  private processSegment(symbol: string, from: number, to: number, jump = false) {
     const dir: 1 | -1 = to >= from ? 1 : -1;
     let cur = from;
     for (let guard = 0; guard < 20000; guard++) {
-      this.updateTrailing(symbol, cur);
+      if (!jump) this.updateTrailing(symbol, cur);
       const ev = this.nextEvent(symbol, cur, to, dir);
       if (!ev) break;
       cur = ev.price;
-      this.state.prices[symbol] = cur;
-      this.handleEvent(symbol, ev);
+      this.state.prices[symbol] = jump ? to : cur;
+      this.handleEvent(symbol, ev, jump ? to : undefined);
     }
     this.state.prices[symbol] = to;
     this.updateTrailing(symbol, to);
   }
 
-  private handleEvent(symbol: string, ev: PathEvent) {
+  /** gapPx — цена открытия после разрыва: исполнение по ней, а не по уровню ордера. */
+  private handleEvent(symbol: string, ev: PathEvent, gapPx?: number) {
     if (ev.kind === 'order') {
       const o = ev.order!;
       if (!this.state.orders[o.id]) return;
       if (o.status === 'Untriggered') {
-        this.trigger(o, ev.price);
+        this.trigger(o, gapPx ?? ev.price);
         // сработавший ордер мог не исполниться (лимит) — он останется в книге
         return;
       }
-      this.executeOrder(this.state.accounts[o.accountId], o, o.price, true);
+      // лимит, «перепрыгнутый» разрывом, исполняется по цене открытия (она лучше лимита)
+      this.executeOrder(this.state.accounts[o.accountId], o, gapPx ?? o.price, true);
       return;
     }
     if (ev.kind === 'liqIso') {
       const pos = ev.position!;
-      if (ev.account!.positions[pos.symbol] === pos && pos.size !== 0) this.liquidateIsolated(ev.account!, pos, ev.price);
+      if (ev.account!.positions[pos.symbol] === pos && pos.size !== 0) this.liquidateIsolated(ev.account!, pos, gapPx ?? ev.price);
       return;
     }
     if (ev.kind === 'liqCross') {
@@ -1744,12 +1746,15 @@ export class Exchange {
     } else {
       path = c >= o ? [prev, o, l, h, c] : [prev, o, h, l, c];
     }
+    // разрыв в данных (рынок был закрыт: ночь/выходные у акций) — цена «перепрыгивает» к открытию:
+    // ордера и стопы внутри разрыва исполняются по цене открытия, а не по своему уровню
+    const gap = i > 0 && s.t[i] - s.t[i - 1] > this.market.dt && prev !== o;
     for (let k = 1; k < path.length; k++) {
       if (path[k] === path[k - 1]) {
         this.state.prices[symbol] = path[k];
         continue;
       }
-      this.processSegment(symbol, path[k - 1], path[k]);
+      this.processSegment(symbol, path[k - 1], path[k], gap && k === 1);
     }
   }
 

@@ -217,3 +217,26 @@ describe('Грид: допустимость числа сеток', () => {
     expect(bad.error).toMatch(/Слишком мало инвестиций/);
   });
 });
+
+describe('Комбо: акции США + крипта', () => {
+  it('ребалансирует портфель из TradFi-перпетуала и BTC', () => {
+    const ex = mkExchange({ AAPLUSDT: wave(330, 30, 200, 12), BTCUSDT: wave(80000, 6000, 200, 7) }, { initialBalance: 10000 });
+    const { bot, error } = ex.createBot('futuresCombo', 'mix', 5000, {
+      legs: [
+        { symbol: 'AAPLUSDT', side: 'long', weight: 60 },
+        { symbol: 'BTCUSDT', side: 'long', weight: 40 },
+      ],
+      leverage: 2,
+      rebalanceMode: 'threshold',
+      intervalHours: 24,
+      thresholdPct: 2,
+    });
+    expect(error).toBeUndefined();
+    for (let i = 0; i < 150; i++) ex.step();
+    expect(bot!.status).toBe('running');
+    expect(bot!.stats.rebalances).toBeGreaterThan(0);
+    const acc = ex.botAccount(bot!);
+    expect(acc.positions.AAPLUSDT.size).toBeGreaterThan(0);
+    expect(acc.positions.BTCUSDT.size).toBeGreaterThan(0);
+  });
+});

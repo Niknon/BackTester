@@ -40,7 +40,7 @@ export type IntervalKey =
   | '1d'
   | '1w';
 
-export type ProviderId = 'bybit' | 'okx' | 'binance' | 'synthetic';
+export type ProviderId = 'bybit' | 'okx' | 'binance' | 'yahoo' | 'synthetic';
 
 export interface LoadProgress {
   symbol: string;

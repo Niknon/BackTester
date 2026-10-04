@@ -279,3 +279,29 @@ describe('TradFi-перпетуалы', () => {
     expect(ex.placeOrder({ category: 'linear', symbol: 'XAUUSDT', side: 'Buy', orderType: 'Market', qty: 0.5 }).status).toBe('Filled');
   });
 });
+
+describe('Разрывы в данных (акции: ночь/выходные)', () => {
+  it('стоп и лимит внутри разрыва исполняются по цене открытия', async () => {
+    const { MarketData } = await import('../src/engine/market');
+    const { seriesFromCandles } = await import('../src/data/types');
+    const { HOUR } = await import('../src/data/intervals');
+    const { T0, mkConfig } = await import('./helpers');
+    // бары 0..2, затем «ночь» (нет данных 3..9), открытие с гэпом вниз в баре 10
+    const cs = [0, 1, 2, 10, 11, 12].map((k) => {
+      const p = k < 10 ? 100 : 90;
+      return { t: T0 + k * HOUR, o: p, h: p + 0.5, l: p - 0.5, c: p, v: 1 };
+    });
+    const m = new MarketData('1h', T0, T0 + 13 * HOUR);
+    m.addSeries('AAPLUSDT', seriesFromCandles('AAPLUSDT', '1h', [{ t: T0 - HOUR, o: 100, h: 100, l: 100, c: 100, v: 1 }, ...cs]), 'yahoo');
+    const ex = Exchange.create(mkConfig({ symbols: ['AAPLUSDT'] }), m);
+    ex.placeOrder({ category: 'linear', symbol: 'AAPLUSDT', side: 'Buy', orderType: 'Market', qty: 10, stopLoss: 97 });
+    ex.placeOrder({ category: 'linear', symbol: 'AAPLUSDT', side: 'Buy', orderType: 'Limit', price: 95, qty: 5 });
+    for (let i = 0; i < 12; i++) ex.step();
+    const sl = ex.state.closedPnl.find((c) => c.type === 'SL')!;
+    expect(sl).toBeDefined();
+    // стоп на 97 «перепрыгнут» гэпом — исполнение по открытию 90, а не по 97
+    expect(sl.exitPrice).toBeLessThanOrEqual(90);
+    const lim = ex.state.executions.find((e) => e.qty === 5 && e.side === 'Buy')!;
+    expect(lim.price).toBe(90);
+  });
+});

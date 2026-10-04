@@ -213,3 +213,21 @@ describe('Маржа и ликвидация проданных опционов
     expect(Math.abs(w0 - ex.main.walletBalance - 0.5 * rec.exitPrice)).toBeLessThan(30);
   });
 });
+
+describe('Модельные опционы на акции США', () => {
+  it('цепочка и сделка по опциону на AAPL (базовый актив — AAPLUSDT)', () => {
+    const warmA: [number, number, number, number][] = Array.from({ length: 24 * 40 }, (_, i) => {
+      const p = 330 * (1 + 0.015 * Math.sin(i / 6));
+      return [p, p * 1.002, p * 0.998, p];
+    });
+    const ex = mkExchange({ AAPLUSDT: flat(330, 30) }, { initialBalance: 10000 }, warmA);
+    const exp = ex.optionExpiries('AAPL')[3];
+    const chain = ex.optionChain('AAPL', exp);
+    expect(chain.rows.length).toBeGreaterThan(5);
+    const row = chain.rows.reduce((b, r) => (Math.abs(r.strike - 330) < Math.abs(b.strike - 330) ? r : b));
+    expect(row.call.mark).toBeGreaterThan(0);
+    const o = ex.placeOrder({ category: 'option', symbol: row.call.inst.symbol, side: 'Buy', orderType: 'Market', qty: 5 });
+    expect(o.status).toBe('Filled');
+    expect(ex.main.positions[row.call.inst.symbol].size).toBe(5);
+  });
+});

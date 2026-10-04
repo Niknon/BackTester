@@ -1,4 +1,4 @@
-import { getAsset } from '../../data/assets';
+import { getAsset, optionsAvailable } from '../../data/assets';
 import { optionQtyStep, optionSymbol, strikeStep, yearsTo } from '../../engine/options';
 import type { Side } from '../../engine/types';
 import { fmtShortDate, fmtNum, exactDecimals } from '../../lib/format';
@@ -16,7 +16,7 @@ export function ChartOptionMenu({ symbol, price, onDone }: { symbol: string; pri
   const [expIdx, setExpIdx] = usePersistent<number>('bt-ctx-opt-exp', 3);
   // количество — своё для каждого актива, вводится вручную или кнопками
   const [qtyMap, setQtyMap] = usePersistent<Record<string, number>>('bt-ctx-opt-qty', {});
-  if (!spec.hasOptions || spec.spotOnly || !ex.market.has(symbol)) return null;
+  if (!optionsAvailable(spec) || !ex.market.has(symbol)) return null;
   const expiries = ex.optionExpiries(spec.base);
   if (!expiries.length) return null;
   const idx = Math.max(0, Math.min(expIdx, expiries.length - 1));

@@ -18,7 +18,7 @@ import {
   type Time,
   type UTCTimestamp,
 } from 'lightweight-charts';
-import { getAsset, roundToStep } from '../../data/assets';
+import { getAsset, optionsAvailable, roundToStep } from '../../data/assets';
 import { bucketStart, chartIntervalsFor, intervalMs } from '../../data/intervals';
 import type { IntervalKey } from '../../data/types';
 import { lowerBound } from '../../data/types';
@@ -765,7 +765,7 @@ export function PriceChart({
             className="absolute z-30 bg-panel2 border border-line2 rounded-md shadow-xl py-1 text-[12px] w-[290px]"
             style={{
               left: Math.max(0, Math.min(ctx.x, (wrapRef.current?.clientWidth ?? 400) - 295)),
-              top: Math.max(0, Math.min(ctx.y, (wrapRef.current?.clientHeight ?? 300) - (getAsset(symbol).hasOptions ? 390 : 140))),
+              top: Math.max(0, Math.min(ctx.y, (wrapRef.current?.clientHeight ?? 300) - (optionsAvailable(getAsset(symbol)) ? 390 : 140))),
             }}
           >
             <div className="px-3 py-1 text-[10px] text-muted num">Цена {fmtPrice(ctx.price, symbol)}</div>

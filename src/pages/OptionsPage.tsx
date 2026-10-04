@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ASSETS } from '../data/assets';
+import { ASSETS, getAsset, SECTOR_LABEL } from '../data/assets';
 import { DAY } from '../data/intervals';
 import { realizedVolAt } from '../data/volatility';
 import { MAIN } from '../engine/exchange';
@@ -8,7 +8,7 @@ import type { Side } from '../engine/types';
 import { ensureSymbol } from '../store/actions';
 import { bump, toast, useSession, useTick } from '../store/session';
 import { fmtNum, fmtPct, fmtPrice, fmtShortDate, fmtTime, fmtUsd, pnlClass, autoDecimals, exactDecimals } from '../lib/format';
-import { Badge, cx, Empty, NumInput, Row, Segmented, Tabs, usePersistent, useResizable } from '../components/ui';
+import { Badge, cx, Dropdown, Empty, NumInput, Row, Segmented, Tabs, usePersistent, useResizable } from '../components/ui';
 import { PositionsTable } from '../components/trade/BottomPanel';
 import { AllPositions, positionsCount } from '../components/positions/AllPositions';
 import { StrategyPanel } from '../components/options/StrategyPanel';
@@ -211,6 +211,11 @@ export function OptionsPage() {
           </div>
           <Info label={`ATM IV (${dte(expiry, ex.now)})`} value={fmtPct(chain?.atm ?? NaN, 1, false)} />
           <Info label="RV 7д / 30д" value={`${fmtPct(rv?.rv7 ?? NaN, 1, false)} / ${fmtPct(rv?.rv30 ?? NaN, 1, false)}`} />
+          {!getAsset(underlying).hasOptions && (
+            <span className="shrink-0" title="На Bybit опционов на этот актив нет: котировки строятся по той же модели (Black–Scholes, IV из реализованной волатильности), исполнение и экспирация — как у опционов Bybit">
+              <Badge color="violet">модельные опционы</Badge>
+            </span>
+          )}
           <Info label="Модель IV" value={ex.config.options.ivSource === 'realized' ? `RV × ${ex.config.options.ivPremium}` : ex.config.options.ivSource === 'dvol' ? 'DVOL' : 'фикс.'} />
           <Info label="Портфель Δ / Γ" value={`${fmtNum(greeks.delta, 3)} / ${fmtNum(greeks.gamma, 5)}`} />
           <Info label="Вега / Тета (день)" value={<span>{fmtNum(greeks.vega, 2)} / <span className={pnlClass(greeks.theta)}>{fmtNum(greeks.theta, 2)}</span></span>} />
@@ -438,20 +443,83 @@ function Info({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
+const SIM_BASES = () => ASSETS.filter((a) => a.simOptions && !a.hasOptions);
+
 function BaseTabs({ base, onBase }: { base: string; onBase: (b: string) => void }) {
   const ex = useSession((s) => s.ex)!;
+  const [q, setQ] = useState('');
+  const sims = SIM_BASES();
+  const cur = sims.find((a) => a.base === base);
+  const list = sims.filter((a) => !q || a.base.includes(q.toUpperCase()) || a.name.toUpperCase().includes(q.toUpperCase()));
   return (
-    <div className="flex items-center gap-1 px-3 pt-2 border-b border-line overflow-x-auto">
-      {BASES.map((a, i) => (
-        <div key={a.base} className="flex items-center shrink-0">
-          {i > 0 && BASES[i - 1].group !== a.group && <div className="w-px h-5 bg-line2 mx-2" />}
-          <div className={cx('tab !mr-3 flex items-center gap-1', base === a.base && 'active')} onClick={() => onBase(a.base)}>
-            {a.base}
-            {!ex.market.has(a.symbol) && <span className="text-dim text-[9px]">↓</span>}
-            {a.group === 'tradfi' && <span className="text-info text-[9px]">perp</span>}
+    <div className="flex items-center gap-2 px-3 pt-2 border-b border-line">
+      <div className="flex items-center gap-1 flex-1 min-w-0 overflow-x-auto">
+        {BASES.map((a, i) => (
+          <div key={a.base} className="flex items-center shrink-0">
+            {i > 0 && BASES[i - 1].group !== a.group && <div className="w-px h-5 bg-line2 mx-2" />}
+            <div className={cx('tab !mr-3 flex items-center gap-1', base === a.base && 'active')} onClick={() => onBase(a.base)}>
+              {a.base}
+              {!ex.market.has(a.symbol) && <span className="text-dim text-[9px]">↓</span>}
+              {a.group === 'tradfi' && <span className="text-info text-[9px]">perp</span>}
+            </div>
           </div>
-        </div>
-      ))}
+        ))}
+        {cur && (
+          <div className="flex items-center shrink-0">
+            <div className="w-px h-5 bg-line2 mx-2" />
+            <div className="tab active !mr-3 flex items-center gap-1" title="Модельные опционы: на Bybit их нет, цены — по той же модели IV">
+              {cur.base} <span className="text-violet text-[9px]">sim</span>
+            </div>
+          </div>
+        )}
+      </div>
+      <div className="shrink-0 pb-1.5">
+        <Dropdown
+          align="right"
+          width={330}
+          button={
+            <button className="btn btn-sm" title="Опционы на акции, ETF, индексы и сырьё США — в симуляции (на Bybit таких опционов нет)">
+              Акции США и др. (симуляция) ▾
+            </button>
+          }
+        >
+          {(close: () => void) => (
+            <div className="flex flex-col">
+              <div className="p-1.5">
+                <input autoFocus className="field w-full" placeholder="Тикер или название: AAPL, золото…" value={q} onChange={(e) => setQ(e.target.value)} />
+              </div>
+              <div className="text-[10px] text-dim px-2 pb-1">
+                Модельные опционы (Black–Scholes, IV из реализованной волатильности). Базовый актив — USDT-перпетуал, история загружается с Bybit/OKX или Yahoo Finance.
+              </div>
+              {(['stock', 'etf', 'index', 'commodity'] as const).map((sec) => {
+                const items = list.filter((a) => a.sector === sec);
+                if (!items.length) return null;
+                return (
+                  <div key={sec}>
+                    <div className="text-[10px] text-muted px-2 pt-1.5">{SECTOR_LABEL[sec]}</div>
+                    <div className="grid grid-cols-3 gap-0.5 p-1">
+                      {items.map((a) => (
+                        <button
+                          key={a.base}
+                          className={cx('text-left px-1.5 py-1 rounded hover:bg-panel3 text-[12px]', a.base === base && 'bg-brand/15 text-brand')}
+                          title={a.name}
+                          onClick={() => {
+                            onBase(a.base);
+                            close();
+                          }}
+                        >
+                          {a.base}
+                          {!ex.market.has(a.symbol) && <span className="text-dim text-[9px]"> ↓</span>}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </Dropdown>
+      </div>
     </div>
   );
 }

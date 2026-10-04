@@ -12,6 +12,12 @@ const proxy = Object.fromEntries(
       changeOrigin: true,
       secure: true,
       rewrite: (p: string) => p.slice(prefix.length),
+      // часть API (Yahoo) отвечает 429/403 на запросы с Origin/Referer localhost
+      configure: (px: any) =>
+        px.on('proxyReq', (req: any) => {
+          req.removeHeader('origin');
+          req.removeHeader('referer');
+        }),
     },
   ]),
 );

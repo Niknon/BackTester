@@ -30,7 +30,8 @@ function proxy(req, res, prefix, target) {
     url,
     {
       method: req.method,
-      headers: { accept: 'application/json', 'user-agent': 'BackTester/0.1' },
+      // Yahoo без «браузерного» User-Agent отвечает 429
+      headers: { accept: 'application/json', 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130 Safari/537.36 BackTester/0.1' },
     },
     (up) => {
       res.writeHead(up.statusCode || 502, {

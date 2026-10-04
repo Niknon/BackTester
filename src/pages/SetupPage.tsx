@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ASSETS, getAsset, hasAsset, kindLabel, registerAsset, SECTOR_LABEL } from '../data/assets';
+import { ASSETS, getAsset, hasAsset, kindLabel, registerAsset, registerUsStock, SECTOR_LABEL } from '../data/assets';
 import { DAY, INTERVALS, intervalMs } from '../data/intervals';
 import { PROVIDER_LIST } from '../data/loader';
 import type { IntervalKey, ProviderId } from '../data/types';
@@ -26,6 +26,8 @@ const PRESETS: { key: string; label: string; days: number }[] = [
   { key: '180d', label: '6 мес', days: 180 },
   { key: '365d', label: '1 год', days: 365 },
   { key: '730d', label: '2 года', days: 730 },
+  { key: '5y', label: '5 лет', days: 1826 },
+  { key: '10y', label: '10 лет', days: 3652 },
 ];
 
 const BASE_INTERVALS: IntervalKey[] = ['1m', '3m', '5m', '15m', '30m', '1h', '4h', '1d'];
@@ -42,11 +44,13 @@ function dayStart(ms: number) {
 
 function AssetPicker({ selected, onToggle }: { selected: string[]; onToggle: (s: string) => void }) {
   const [custom, setCustom] = useState('');
+  const [stock, setStock] = useState('');
   const groups = [
     { title: 'Базовые активы опционов Bybit — крипто', items: ASSETS.filter((a) => a.hasOptions && a.group === 'crypto') },
     { title: 'Perp Options Bybit — TradFi (акции/ETF)', items: ASSETS.filter((a) => a.hasOptions && a.group === 'tradfi') },
     ...(['stock', 'etf', 'index', 'commodity'] as const).map((sec) => ({
       title: `TradFi Bybit — фьючерсы с плечом: ${SECTOR_LABEL[sec]}`,
+      note: sec === 'stock' ? 'Длинная история (дневная — за десятилетия, часовая — 2 года) загружается с Yahoo Finance. Опционы на все TradFi-активы доступны в симуляции.' : undefined,
       items: ASSETS.filter((a) => a.group === 'tradfi' && !a.hasOptions && a.sector === sec),
     })),
     { title: 'Другие USDT-перпетуалы (крипто)', items: ASSETS.filter((a) => !a.hasOptions && !a.spotOnly && a.group === 'crypto') },
@@ -85,6 +89,22 @@ function AssetPicker({ selected, onToggle }: { selected: string[]; onToggle: (s:
           </div>
         </div>
       ))}
+      <div className="flex gap-2 items-center">
+        <TextInput value={stock} onChange={(v) => setStock(v.toUpperCase())} placeholder="Любая акция/ETF США по тикеру Yahoo, напр. DIS, KO, ARKK" className="flex-1" />
+        <button
+          className="btn"
+          title="Добавить как USDT-перпетуал в симуляторе: история с Yahoo Finance (дневная — за десятилетия, часовая — 2 года), доступны опционы и боты"
+          onClick={() => {
+            const t = stock.trim();
+            if (!t) return;
+            const spec = registerUsStock(t);
+            if (!selected.includes(spec.symbol)) onToggle(spec.symbol);
+            setStock('');
+          }}
+        >
+          + Акция США
+        </button>
+      </div>
       <div className="flex gap-2 items-center">
         <TextInput value={custom} onChange={(v) => setCustom(v.toUpperCase())} placeholder="Любой символ Bybit, напр. PEPEUSDT" className="flex-1" />
         <button

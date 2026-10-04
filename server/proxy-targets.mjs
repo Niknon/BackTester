@@ -4,4 +4,5 @@ export const PROXY_TARGETS = {
   '/proxy/okx': 'https://www.okx.com',
   '/proxy/binance-fapi': 'https://fapi.binance.com',
   '/proxy/deribit': 'https://www.deribit.com',
+  '/proxy/yahoo': 'https://query1.finance.yahoo.com',
 };

@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { ASSETS, getAsset } from '../data/assets';
+import { ASSETS, getAsset, optionsAvailable } from '../data/assets';
 import { DAY } from '../data/intervals';
 import { lowerBound } from '../data/types';
 import { realizedVolAt } from '../data/volatility';
@@ -159,8 +159,8 @@ export function MarketsPage() {
                         <button className={cx('btn btn-sm', !r.a.spotOnly && 'btn-ghost')} onClick={() => set({ page: 'spot', symbol: r.a.symbol })}>
                           Спот
                         </button>
-                        {r.a.hasOptions && (
-                          <button className="btn btn-sm btn-ghost" onClick={() => set({ page: 'options', optionBase: r.a.base })}>
+                        {optionsAvailable(r.a) && (
+                          <button className="btn btn-sm btn-ghost" onClick={() => set({ page: 'options', optionBase: r.a.base })} title={r.a.hasOptions ? 'Опционы Bybit' : 'Модельные опционы (на Bybit их нет)'}>
                             Опционы
                           </button>
                         )}
