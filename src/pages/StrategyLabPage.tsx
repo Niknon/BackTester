@@ -213,9 +213,20 @@ export function StrategyLabPage() {
             <button className={cx('btn btn-sm ml-auto', showApi ? 'btn-brand' : 'btn-ghost')} onClick={() => setShowApi(!showApi)}>
               Справка API
             </button>
+            <button className="btn btn-sm btn-brand" disabled={running || !compiled.ok} onClick={() => run()} title="Ctrl+Enter">
+              ▶ Запустить
+            </button>
           </div>
           <div className="flex-1 min-h-0 flex">
-            <div className="flex-1 min-w-0 overflow-hidden">
+            <div
+              className="flex-1 min-w-0 overflow-hidden"
+              onKeyDown={(e) => {
+                if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && !running && compiled.ok) {
+                  e.preventDefault();
+                  run();
+                }
+              }}
+            >
               <CodeMirror value={code} height="100%" theme={oneDark} extensions={[javascript()]} onChange={setCode} className="h-full" basicSetup={{ foldGutter: false }} />
             </div>
             {showApi && <pre className="w-[470px] shrink-0 overflow-auto text-[11px] leading-[1.5] p-3 bg-[#1b1d23] text-muted font-mono whitespace-pre">{API_DOC}</pre>}

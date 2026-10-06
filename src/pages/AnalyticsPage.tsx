@@ -124,7 +124,7 @@ export function AnalyticsPage() {
       bySym.set(key, r);
     }
     // по источникам
-    const src = { linear: 0, option: 0, spot: 0, bots: 0 };
+    const src = { linear: 0, option: 0, spot: 0, bots: 0, open: ex.core(ex.main).upnlAll };
     for (const c of ex.state.closedPnl) {
       if (c.accountId !== MAIN) continue;
       src[c.category] += c.closedPnl;
@@ -201,6 +201,7 @@ export function AnalyticsPage() {
               ['Опционы', data.src.option],
               ['Спот (реализ.)', data.src.spot],
               ['Боты', data.src.bots],
+              ['Открытые позиции (нереализ.)', data.src.open],
             ] as const
           ).map(([l, val]) => (
             <div key={l} className="flex items-center justify-between">

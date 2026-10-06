@@ -12,20 +12,27 @@ function Tile({ label, value, className, hint }: { label: string; value: React.R
 }
 
 export function ReportGrid({ r, cols = 6, compact }: { r: PerformanceReport; cols?: number; compact?: boolean }) {
-  const pf = Number.isFinite(r.profitFactor) ? fmtNum(r.profitFactor, 2) : '∞';
+  const pf = !r.trades ? '—' : Number.isFinite(r.profitFactor) ? fmtNum(r.profitFactor, 2) : '∞';
   const tiles = [
     <Tile key="ret" label="Доходность" value={fmtPct(r.totalReturn)} className={pnlClass(r.totalReturn)} hint="Изменение капитала за период" />,
     <Tile key="pnl" label="PnL, USDT" value={fmtUsd(r.pnl, 2, true)} className={pnlClass(r.pnl)} />,
     <Tile key="dd" label="Макс. просадка" value={fmtPct(-r.maxDrawdown)} className="text-down" hint={`${fmtUsd(r.maxDrawdownAbs)} USDT, дольше всего ${fmtNum(r.maxDrawdownDays, 1)} дн.`} />,
-    <Tile key="sh" label="Шарп (год.)" value={fmtNum(r.sharpe, 2)} className={pnlClass(r.sharpe)} hint="По дневным доходностям, безрисковая ставка 0" />,
-    <Tile key="so" label="Сортино" value={fmtNum(r.sortino, 2)} className={pnlClass(r.sortino)} />,
+    <Tile key="sh" label="Шарп (год.)" value={r.days < 3 ? '—' : fmtNum(r.sharpe, 2)} className={r.days < 3 ? 'text-dim' : pnlClass(r.sharpe)} hint="По дневным доходностям, безрисковая ставка 0 (от 3 дней истории)" />,
+    <Tile key="so" label="Сортино" value={r.days < 3 ? '—' : fmtNum(r.sortino, 2)} className={r.days < 3 ? 'text-dim' : pnlClass(r.sortino)} />,
     <Tile key="bench" label="Buy & Hold" value={r.benchReturn === null ? '—' : fmtPct(r.benchReturn)} className={pnlClass(r.benchReturn)} hint="Доходность удержания базового актива" />,
-    <Tile key="tr" label="Сделок" value={fmtNum(r.trades, 0)} />,
-    <Tile key="wr" label="Win rate" value={fmtPct(r.winRate, 1, false)} />,
-    <Tile key="pf" label="Profit factor" value={pf} className={r.profitFactor >= 1 ? 'text-up' : 'text-down'} />,
+    <Tile key="tr" label="Сделок" value={fmtNum(r.trades, 0)} hint="Закрытые сделки (открытые позиции не учитываются)" />,
+    <Tile key="wr" label="Win rate" value={r.trades ? fmtPct(r.winRate, 1, false) : '—'} hint="Доля прибыльных среди закрытых сделок" />,
+    <Tile key="pf" label="Profit factor" value={pf} className={!r.trades ? 'text-dim' : r.profitFactor >= 1 ? 'text-up' : 'text-down'} hint="Сумма прибылей / сумма убытков закрытых сделок" />,
     <Tile key="exp" label="Ожидание / сделку" value={fmtUsd(r.expectancy, 2, true)} className={pnlClass(r.expectancy)} />,
-    <Tile key="cagr" label="CAGR" value={Math.abs(r.cagr) > 100 ? '>10000%' : fmtPct(r.cagr)} className={pnlClass(r.cagr)} hint="Годовая доходность при сохранении темпа" />,
-    <Tile key="cal" label="Калмар" value={fmtNum(r.calmar, 2)} />,
+    // годовые показатели на коротком отрезке бессмысленны (−100% за 0.4 дня) — показываем «—»
+    <Tile
+      key="cagr"
+      label="CAGR"
+      value={r.days < 30 ? '—' : Math.abs(r.cagr) > 100 ? '>10000%' : fmtPct(r.cagr)}
+      className={r.days < 30 ? 'text-dim' : pnlClass(r.cagr)}
+      hint={r.days < 30 ? 'Годовая доходность считается от 30 дней истории' : 'Годовая доходность при сохранении темпа'}
+    />,
+    <Tile key="cal" label="Калмар" value={r.days < 30 ? '—' : fmtNum(r.calmar, 2)} className={r.days < 30 ? 'text-dim' : ''} hint={r.days < 30 ? 'Считается от 30 дней истории' : 'CAGR / макс. просадка'} />,
   ];
   if (!compact)
     tiles.push(

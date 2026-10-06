@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useSession, useTick } from '../store/session';
+import { bump, useSession, useTick } from '../store/session';
 import { fastForward, getCheckpoints, pause, play, rewindTo, setSpeed, stepBars, stepCandle } from '../store/actions';
 import { cx, Dropdown, Check } from './ui';
 import { fmtNum, fmtTime, toDateInput, fromDateInput } from '../lib/format';
@@ -151,6 +151,15 @@ export function ReplayBar() {
           </Check>
           <Check checked={prefs.pauseOnLiquidation} onChange={(v) => setPrefs({ pauseOnLiquidation: v })}>
             Пауза при ликвидации
+          </Check>
+          <Check
+            checked={ex.config.fundingEnabled}
+            onChange={(v) => {
+              ex.config.fundingEnabled = v;
+              bump(true);
+            }}
+          >
+            <span title="Действует с текущего момента. Если funding был выключен при загрузке, используется ставка по умолчанию.">Учитывать funding (для этой сессии)</span>
           </Check>
           <Check checked={prefs.pauseOnAlert} onChange={(v) => setPrefs({ pauseOnAlert: v })}>
             Пауза (и стоп перемотки) при срабатывании алерта

@@ -9,6 +9,7 @@ import { ComboForm, DcaForm, FuturesGridForm, MartingaleForm, SpotGridForm, type
 import { ReportGrid } from '../components/ReportGrid';
 import { EquityChart } from '../components/EquityChart';
 import { PriceChart } from '../components/chart/PriceChart';
+import { LegsCompare } from '../components/bots/LegsCompare';
 import { BotDetailsModal, ComboRebalanceStatus, ComboWeights, LastRebalance, RebalanceTable } from '../components/bots/BotDetails';
 
 const TYPES: { type: BotType; icon: string; desc: string }[] = [
@@ -148,7 +149,7 @@ export function BotsPage() {
                 value={bt ? rightTab : 'chart'}
                 onChange={setRightTab}
                 options={[
-                  { value: 'chart', label: `График ${previewSymbol}` },
+                  { value: 'chart', label: preview?.kind === 'combo' ? 'Сравнение активов' : `График ${previewSymbol}` },
                   { value: 'backtest', label: bt ? 'Результат бэктеста' : 'Бэктест —', disabled: !bt },
                 ]}
               />
@@ -204,6 +205,9 @@ export function BotsPage() {
             ) : (
               <div className="flex-1 min-h-[300px] p-1 flex flex-col">
                 <div className="flex-1 min-h-0">
+                  {preview?.kind === 'combo' ? (
+                    <LegsCompare legs={preview.legs.filter((l) => ex.market.has(l.symbol))} />
+                  ) : (
                   <PriceChart
                     symbol={previewSymbol}
                     tf={chartTf}
@@ -214,6 +218,7 @@ export function BotsPage() {
                     fitPrices={pov.fit}
                     onLineDrag={(id, price) => setChartDrag((d) => ({ id, price, n: (d?.n ?? 0) + 1 }))}
                   />
+                  )}
                 </div>
                 <div className="text-[11px] text-dim px-2 pt-1">
                   Предпросмотр обновляется при изменении параметров. Быстрый бэктест прогоняет бота в отдельной копии биржи и не влияет на текущую сессию.

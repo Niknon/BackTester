@@ -22,7 +22,7 @@ export type BotPreview =
     }
   | { kind: 'martingale'; symbol: string; side: 'long' | 'short'; stepPct: number; maxAdds: number; multiplier: number; tpPct: number; slPct?: number }
   | { kind: 'dca'; symbol: string; priceBelow?: number; tpPct?: number }
-  | { kind: 'combo'; symbol: string };
+  | { kind: 'combo'; symbol: string; legs: { symbol: string; side: 'long' | 'short'; weight: number }[] };
 
 export interface ChartOverlay {
   lines: ExtraLine[];

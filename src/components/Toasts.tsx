@@ -19,19 +19,31 @@ const COLOR: Record<string, string> = {
   sell: 'border-down/50 text-down',
 };
 
+/**
+ * Уведомления: не больше трёх сразу, сверху по центру под панелью времени —
+ * не закрывают форму ордера и таблицу позиций. Клик — закрыть.
+ */
 export function Toasts() {
   const toasts = useSession((s) => s.toasts);
+  const shown = toasts.slice(-3);
+  const dismiss = (id: number) => useSession.setState((s) => ({ toasts: s.toasts.filter((x) => x.id !== id) }));
   return (
-    <div className="fixed right-4 bottom-4 z-[60] flex flex-col gap-2 w-[340px] pointer-events-none">
-      {toasts.map((t) => (
-        <div key={t.id} className={cx('panel border-l-4 border border-line2 shadow-xl px-3 py-2 flex gap-3 pointer-events-auto', COLOR[t.kind])}>
-          <div className="font-bold text-[14px] w-4 text-center">{ICON[t.kind]}</div>
+    <div className="fixed left-1/2 -translate-x-1/2 top-[98px] z-[60] flex flex-col gap-1.5 w-[380px] max-w-[92vw] pointer-events-none">
+      {shown.map((t) => (
+        <div
+          key={t.id}
+          className={cx('panel border-l-4 border border-line2 shadow-xl px-3 py-1.5 flex gap-2.5 pointer-events-auto cursor-pointer bg-panel2/95', COLOR[t.kind])}
+          onClick={() => dismiss(t.id)}
+          title="Нажмите, чтобы закрыть"
+        >
+          <div className="font-bold text-[13px] w-4 text-center shrink-0">{ICON[t.kind]}</div>
           <div className="min-w-0">
-            <div className="text-text font-semibold truncate">{t.title}</div>
-            {t.text && <div className="text-muted text-[11px] break-words">{t.text}</div>}
+            <div className="text-text font-semibold truncate text-[12px]">{t.title}</div>
+            {t.text && <div className="text-muted text-[11px] break-words line-clamp-2">{t.text}</div>}
           </div>
         </div>
       ))}
+      {toasts.length > 3 && <div className="text-center text-[10px] text-dim">ещё {toasts.length - 3}…</div>}
     </div>
   );
 }

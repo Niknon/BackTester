@@ -144,7 +144,9 @@ export function MarketsPage() {
                       {fmtPrice(r.hi, r.a.symbol)} / {fmtPrice(r.lo, r.a.symbol)}
                     </td>
                     <td className="text-right">{fmtNum(r.turnover, 2, { compact: true })}</td>
-                    <td className={cx('text-right', r.funding >= 0 ? 'text-brand' : 'text-info')}>{Number.isFinite(r.funding) ? `${(r.funding * 100).toFixed(4)}%` : <span className="text-dim">—</span>}</td>
+                    <td className={cx('text-right', r.funding >= 0 ? 'text-brand' : 'text-info')}>
+                      {!ex.config.fundingEnabled ? <span className="text-dim">выкл.</span> : Number.isFinite(r.funding) ? `${(r.funding * 100).toFixed(4)}%` : <span className="text-dim">—</span>}
+                    </td>
                     <td className="text-right">{fmtPct(r.vol, 1, false)}</td>
                     <td>
                       <Sparkline data={r.spark} width={120} height={28} />

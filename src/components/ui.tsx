@@ -331,21 +331,51 @@ export function Dropdown({
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ left: number; top: number; maxH: number } | null>(null);
   useEffect(() => {
     if (!open) return;
     const h = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     };
+    const k = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false);
     window.addEventListener('mousedown', h);
-    return () => window.removeEventListener('mousedown', h);
+    window.addEventListener('keydown', k);
+    return () => {
+      window.removeEventListener('mousedown', h);
+      window.removeEventListener('keydown', k);
+    };
   }, [open]);
+  // позиционирование fixed — меню не обрезается контейнерами с прокруткой
+  const place = () => {
+    const r = ref.current?.getBoundingClientRect();
+    if (!r) return;
+    const w = Math.min(width, window.innerWidth - 16);
+    let left = align === 'right' ? r.right - w : r.left;
+    left = Math.max(8, Math.min(left, window.innerWidth - w - 8));
+    const below = window.innerHeight - r.bottom - 12;
+    const above = r.top - 12;
+    if (below < 260 && above > below) setPos({ left, top: -1, maxH: Math.min(above, window.innerHeight * 0.75) });
+    else setPos({ left, top: r.bottom + 4, maxH: Math.min(below, window.innerHeight * 0.75) });
+  };
   return (
     <div className="relative" ref={ref}>
-      <div onClick={() => setOpen((o) => !o)}>{button}</div>
-      {open && (
+      <div
+        onClick={() => {
+          if (!open) place();
+          setOpen((o) => !o);
+        }}
+      >
+        {button}
+      </div>
+      {open && pos && (
         <div
-          className={cx('absolute top-full mt-1 z-40 panel border border-line2 shadow-xl p-1 max-h-[70vh] overflow-auto', align === 'right' ? 'right-0' : 'left-0')}
-          style={{ width }}
+          className="fixed z-50 panel border border-line2 shadow-xl p-1 overflow-auto"
+          style={{
+            width: Math.min(width, window.innerWidth - 16),
+            left: pos.left,
+            ...(pos.top < 0 ? { bottom: window.innerHeight - (ref.current?.getBoundingClientRect().top ?? 0) + 4 } : { top: pos.top }),
+            maxHeight: pos.maxH,
+          }}
         >
           {typeof children === 'function' ? children(() => setOpen(false)) : children}
         </div>

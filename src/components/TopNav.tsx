@@ -70,7 +70,7 @@ export function TopNav() {
           <button
             key={n.page}
             onClick={() => set({ page: n.page })}
-            className={cx('px-2 xl:px-3 h-12 text-[13px] whitespace-nowrap border-b-2 transition-colors', page === n.page ? 'border-brand text-text font-semibold' : 'border-transparent text-muted hover:text-text')}
+            className={cx('px-2 2xl:px-3 h-12 text-[13px] whitespace-nowrap border-b-2 transition-colors', page === n.page ? 'border-brand text-text font-semibold' : 'border-transparent text-muted hover:text-text')}
           >
             {n.label}
           </button>
@@ -80,11 +80,11 @@ export function TopNav() {
         {hasEx && <EquityBadge />}
         {hasEx && (
           <button className="btn btn-ghost btn-sm" onClick={() => saveSession()} title={savedAt ? `Сохранено ${new Date(savedAt).toLocaleTimeString('ru-RU')}` : 'Сохранить сессию в браузере'}>
-            💾 <span className="hidden xl:inline">Сохранить</span>
+            💾 <span className="hidden 2xl:inline">Сохранить</span>
           </button>
         )}
-        <button className={cx('btn btn-sm', page === 'setup' || !hasEx ? 'btn-brand' : 'btn-ghost')} onClick={() => set({ page: 'setup' })}>
-          ⚙ Сессии
+        <button className={cx('btn btn-sm', page === 'setup' || !hasEx ? 'btn-brand' : 'btn-ghost')} onClick={() => set({ page: 'setup' })} title="Сессии: новая, сохранённые, импорт">
+          ⚙ <span className="hidden 2xl:inline">Сессии</span>
         </button>
       </div>
     </header>

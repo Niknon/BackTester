@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ASSETS, getAsset, roundToStep, spotQtyStep } from '../../data/assets';
+import { getAsset, roundToStep, spotQtyStep } from '../../data/assets';
 import { gridLevels, maxFeasibleGrids } from '../../engine/bots/grid';
 import { suggestFuturesGrid, suggestSpotGrid } from '../../engine/bots/suggest';
 import { COMBO_UTILIZATION } from '../../engine/bots/combo';
@@ -7,7 +7,8 @@ import type { BotParamsMap, BotType, ComboLeg, GridMode } from '../../engine/bot
 import { ensureSymbol } from '../../store/actions';
 import { useSession, useTick, toast } from '../../store/session';
 import { fmtNum, fmtPct, fmtPrice, fmtUsd } from '../../lib/format';
-import { Check, cx, Help, NumInput, PercentSlider, Row, Segmented, Select } from '../ui';
+import { Check, cx, Dropdown, Help, NumInput, PercentSlider, Row, Segmented, Select } from '../ui';
+import { SymbolList } from '../SymbolList';
 import type { BotPreview } from './botChart';
 
 export interface FormResult<T extends BotType = BotType> {
@@ -55,31 +56,22 @@ export function perpOr(symbol: string, ex: { market: { symbols(): string[] } }) 
 function SymbolPick({ value, onChange, label = 'Пара', spot = false }: { value: string; onChange: (s: string) => void; label?: string; spot?: boolean }) {
   const ex = useSession((s) => s.ex)!;
   const loading = useSession((s) => s.loadingSymbols);
-  const ok = (s: string) => spot || !getAsset(s).spotOnly;
-  const loaded = ex.market.symbols().filter(ok);
-  const opts = [...loaded, ...ASSETS.map((a) => a.symbol).filter((s) => ok(s) && !loaded.includes(s))];
+  const spec = getAsset(value);
   return (
-    <label className="field">
-      <span className="lbl">{label}</span>
-      <select
-        value={value}
-        onChange={async (e) => {
-          const s = e.target.value;
-          if (!ex.market.has(s)) {
-            const ok = await ensureSymbol(s);
-            if (!ok) return;
-          }
-          onChange(s);
-        }}
-      >
-        {opts.map((s) => (
-          <option key={s} value={s}>
-            {s}
-            {ex.market.has(s) ? '' : loading.includes(s) ? ' (загрузка…)' : ' — загрузить'}
-          </option>
-        ))}
-      </select>
-    </label>
+    <Dropdown
+      width={430}
+      button={
+        <button type="button" className="field w-full justify-between text-left">
+          {label && <span className="lbl">{label}</span>}
+          <span className="flex-1 min-w-0 truncate">
+            <b>{value}</b> <span className="text-[10px] text-muted">{spec.name}</span>
+          </span>
+          <span className="text-[10px] text-muted shrink-0">{loading.includes(value) ? 'загрузка…' : ex.market.has(value) ? '' : 'не загружен'} ▾</span>
+        </button>
+      }
+    >
+      {(close: () => void) => <SymbolList value={value} onPick={onChange} close={close} spot={spot} storeKey={spot ? 'bot-spot' : 'bot-perp'} />}
+    </Dropdown>
   );
 }
 
@@ -375,6 +367,27 @@ export function FuturesGridForm({ onSubmit, busy, initialSymbol, onPreview, char
 
 /* ───────── Комбо (ребалансировка) ───────── */
 
+/** Готовые портфели (недостающие символы догружаются). */
+const COMBO_PRESETS: { name: string; legs: ComboLeg[] }[] = [
+  { name: 'BTC + S&P 500', legs: [{ symbol: 'BTCUSDT', side: 'long', weight: 50 }, { symbol: 'US500USDT', side: 'long', weight: 50 }] },
+  { name: 'BTC + золото + S&P', legs: [{ symbol: 'BTCUSDT', side: 'long', weight: 40 }, { symbol: 'XAUUSDT', side: 'long', weight: 30 }, { symbol: 'US500USDT', side: 'long', weight: 30 }] },
+  { name: 'Крипта + Nasdaq', legs: [{ symbol: 'BTCUSDT', side: 'long', weight: 35 }, { symbol: 'ETHUSDT', side: 'long', weight: 25 }, { symbol: 'US100USDT', side: 'long', weight: 40 }] },
+  {
+    name: 'Mag-7 + BTC',
+    legs: [
+      { symbol: 'AAPLUSDT', side: 'long', weight: 12.5 },
+      { symbol: 'MSFTUSDT', side: 'long', weight: 12.5 },
+      { symbol: 'NVDAUSDT', side: 'long', weight: 12.5 },
+      { symbol: 'GOOGLUSDT', side: 'long', weight: 12.5 },
+      { symbol: 'AMZNUSDT', side: 'long', weight: 12.5 },
+      { symbol: 'METAUSDT', side: 'long', weight: 12.5 },
+      { symbol: 'TSLAUSDT', side: 'long', weight: 12.5 },
+      { symbol: 'BTCUSDT', side: 'long', weight: 12.5 },
+    ],
+  },
+  { name: 'Крипто-акции vs BTC', legs: [{ symbol: 'COINUSDT', side: 'long', weight: 25 }, { symbol: 'MSTRUSDT', side: 'long', weight: 25 }, { symbol: 'BTCUSDT', side: 'short', weight: 50 }] },
+];
+
 export function ComboForm({ onSubmit, busy, onPreview }: FormProps) {
   const ex = useSession((s) => s.ex)!;
   const loaded = ex.market.symbols().filter((x) => !getAsset(x).spotOnly);
@@ -384,6 +397,7 @@ export function ComboForm({ onSubmit, busy, onPreview }: FormProps) {
     return syms.map((s, i) => ({ symbol: s, side: i === 0 ? 'long' : i === 1 ? 'short' : 'long', weight: i === syms.length - 1 ? Number((100 - w * (syms.length - 1)).toFixed(2)) : w }));
   });
   const [lev, setLev] = useState(3);
+  const [presetBusy, setPresetBusy] = useState(false);
   const [modeR, setModeR] = useState<'time' | 'threshold' | 'none'>('threshold');
   const [interval, setIntervalH] = useState<number | ''>(24);
   const [threshold, setThreshold] = useState<number | ''>(5);
@@ -391,7 +405,7 @@ export function ComboForm({ onSubmit, busy, onPreview }: FormProps) {
   const [tpRoi, setTpRoi] = useState<number | ''>('');
   const [slRoi, setSlRoi] = useState<number | ''>('');
   const sum = legs.reduce((s, l) => s + (Number(l.weight) || 0), 0);
-  usePreview(onPreview, legs[0] ? { kind: 'combo', symbol: legs[0].symbol } : null);
+  usePreview(onPreview, legs[0] ? { kind: 'combo', symbol: legs[0].symbol, legs: legs.map((l) => ({ symbol: l.symbol, side: l.side, weight: Number(l.weight) || 0 })) } : null);
   const maxLev = Math.min(...legs.map((l) => getAsset(l.symbol).maxLeverage), 100);
   const equalize = () => {
     const n = legs.length;
@@ -415,7 +429,31 @@ export function ComboForm({ onSubmit, busy, onPreview }: FormProps) {
   return (
     <div className="flex flex-col gap-3">
       <div className="text-[11px] text-muted">
-        Портфель из USDT-перпетуалов с целевыми весами. Бот открывает лонг/шорт позиции и возвращает веса к цели по расписанию или при отклонении.
+        Портфель из USDT-перпетуалов с целевыми весами: крипта, акции США, ETF, индексы, сырьё — в любых сочетаниях. Бот открывает лонг/шорт позиции и возвращает веса к цели по
+        расписанию или при отклонении.
+      </div>
+      <div className="flex flex-wrap gap-1 items-center">
+        <span className="text-[10px] text-muted">Шаблоны:</span>
+        {COMBO_PRESETS.map((p) => (
+          <button
+            key={p.name}
+            type="button"
+            className="chip border border-line2 !py-0.5 text-[10px]"
+            disabled={presetBusy}
+            title={p.legs.map((l) => `${l.side === 'long' ? '▲' : '▼'}${l.symbol} ${l.weight}%`).join(', ')}
+            onClick={async () => {
+              setPresetBusy(true);
+              try {
+                for (const l of p.legs) if (!ex.market.has(l.symbol) && !(await ensureSymbol(l.symbol))) return;
+                setLegs(p.legs.map((l) => ({ ...l })));
+              } finally {
+                setPresetBusy(false);
+              }
+            }}
+          >
+            {p.name}
+          </button>
+        ))}
       </div>
       <div className="flex flex-col gap-1.5">
         {legs.map((l, i) => (
@@ -437,7 +475,7 @@ export function ComboForm({ onSubmit, busy, onPreview }: FormProps) {
         ))}
         <div className="flex gap-2 items-center">
           <button className="btn btn-sm" onClick={() => setLegs([...legs, { symbol: loaded.find((s) => !legs.some((l) => l.symbol === s)) ?? loaded[0] ?? 'BTCUSDT', side: 'long', weight: 0 }])}>
-            + Монета
+            + Актив
           </button>
           <button className="btn btn-sm btn-ghost" onClick={equalize}>
             Равные веса

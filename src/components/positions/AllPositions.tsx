@@ -260,8 +260,7 @@ export function AllPositions({ onNavigate }: { onNavigate?: () => void }) {
                 <th>Инструмент</th>
                 <th className="text-right">Кол-во / позиция</th>
                 <th className="text-right">Стоимость</th>
-                <th className="text-right">Вход</th>
-                <th className="text-right">Текущая</th>
+                <th className="text-right">Цена / вход</th>
                 <th className="text-right">Нереализ. PnL (ROI)</th>
                 <th>Риск / детали</th>
                 <th className="text-right">Действия</th>
@@ -292,8 +291,10 @@ export function AllPositions({ onNavigate }: { onNavigate?: () => void }) {
                     {r.qtyText}
                   </td>
                   <td className="text-right">{fmtUsd(r.value)}</td>
-                  <td className="text-right text-muted">{r.entry ?? '—'}</td>
-                  <td className="text-right">{r.mark ?? '—'}</td>
+                  <td className="text-right">
+                    {r.mark ?? '—'}
+                    <div className="text-[10px] text-muted">{r.entry ? (r.kind === 'bot' ? r.entry : `вход ${r.entry}`) : ''}</div>
+                  </td>
                   <td className={cx('text-right', pnlClass(r.upnl))}>
                     {fmtUsd(r.upnl, 2, true)}
                     <div className="text-[10px]">{fmtPct(r.roi)}</div>
@@ -323,13 +324,13 @@ export function AllPositions({ onNavigate }: { onNavigate?: () => void }) {
                               TP/SL
                             </button>
                           )}
-                          <button className="btn btn-sm btn-ghost" onClick={() => closePart(ex, r, 0.25)} title="Закрыть 25% по рынку">
-                            25%
+                          <button className="btn btn-sm btn-ghost !px-1.5" onClick={() => closePart(ex, r, 0.25)} title="Закрыть 25% по рынку">
+                            ¼
                           </button>
-                          <button className="btn btn-sm btn-ghost" onClick={() => closePart(ex, r, 0.5)} title="Закрыть 50% по рынку">
-                            50%
+                          <button className="btn btn-sm btn-ghost !px-1.5" onClick={() => closePart(ex, r, 0.5)} title="Закрыть 50% по рынку">
+                            ½
                           </button>
-                          <button className="btn btn-sm" onClick={() => closePart(ex, r, 1)}>
+                          <button className="btn btn-sm" onClick={() => closePart(ex, r, 1)} title={r.kind === 'spot' ? 'Продать всё по рынку' : 'Закрыть всю позицию по рынку'}>
                             {r.kind === 'spot' ? 'Продать' : 'Закрыть'}
                           </button>
                         </>

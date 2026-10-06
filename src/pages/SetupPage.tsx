@@ -417,6 +417,18 @@ export function SetupPage() {
               {feeField('linearMaker', 'Мейкер перп.')}
               <NumInput label="Проскальзывание" suffix="б.п." value={slip} onChange={setSlip} step={1} />
             </div>
+            <div className="grid grid-cols-3 gap-3 items-center">
+              <Check checked={funding} onChange={setFunding}>
+                <span title="Выплаты/списания funding по позициям перпетуалов каждые 8 ч (по истории ставок, где она есть, иначе — ставка по умолчанию). Можно переключить и во время сессии (⚙ на панели времени).">
+                  Учитывать funding
+                </span>
+              </Check>
+              {funding ? (
+                <NumInput label="Funding по умолч." suffix="%/8ч" value={defFunding} onChange={setDefFunding} step={0.005} />
+              ) : (
+                <span className="text-[11px] text-muted col-span-2">Funding выключен: позиции перпетуалов не платят и не получают финансирование.</span>
+              )}
+            </div>
             {adv && (
               <>
                 <div className="grid grid-cols-3 gap-3">
@@ -428,10 +440,6 @@ export function SetupPage() {
                   <NumInput label="Лимит комиссии опц." suffix="% премии" value={fees.optionFeeCap * 100} onChange={(v) => setFees({ ...fees, optionFeeCap: (Number(v) || 0) / 100 })} />
                 </div>
                 <div className="grid grid-cols-3 gap-3 items-center">
-                  <Check checked={funding} onChange={setFunding}>
-                    Учитывать funding
-                  </Check>
-                  <NumInput label="Funding по умолч." suffix="%/8ч" value={defFunding} onChange={setDefFunding} step={0.005} />
                   <Select
                     label="Путь цены в баре"
                     value={intrabar}
@@ -464,7 +472,7 @@ export function SetupPage() {
             )}
           </Section>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 sticky bottom-0 z-10 -mx-1 px-1 py-3 bg-bg/95 backdrop-blur border-t border-line">
             <button className="btn btn-brand h-10 px-8 text-[14px]" disabled={!valid} onClick={launch}>
               Начать сессию →
             </button>
