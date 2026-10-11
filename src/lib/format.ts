@@ -96,6 +96,16 @@ export function fmtCountdown(ms: number): string {
   return `${pad(Math.floor(s / 3600))}:${pad(Math.floor((s % 3600) / 60))}:${pad(s % 60)}`;
 }
 
+/** Русское склонение после числа: plural(4, 'нога', 'ноги', 'ног') → «ноги». */
+export function plural(n: number, one: string, few: string, many: string): string {
+  const a = Math.abs(n) % 100;
+  const b = a % 10;
+  if (a > 10 && a < 20) return many;
+  if (b === 1) return one;
+  if (b >= 2 && b <= 4) return few;
+  return many;
+}
+
 export function pnlClass(n: number | null | undefined): string {
   if (n === null || n === undefined || !Number.isFinite(n) || Math.abs(n) < 1e-12) return 'text-muted';
   return n > 0 ? 'text-up' : 'text-down';

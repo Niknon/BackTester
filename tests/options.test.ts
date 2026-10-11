@@ -149,6 +149,9 @@ describe('Опционные стратегии', () => {
     const res = openStrategy(ex, r.legs);
     expect(res.ok).toBe(true);
     expect(Object.values(ex.main.positions).filter((p) => p.category === 'option').length).toBe(4);
+    // исполнения — в порядке ног стратегии, с ценами (для сводного уведомления)
+    expect(res.fills.map((f) => f.leg.symbol)).toEqual(r.legs.map((l) => l.symbol));
+    expect(res.fills.every((f) => f.order.status === 'Filled' && f.order.avgPrice > 0)).toBe(true);
   });
 
   it('если нога отклонена — исполненные ноги откатываются', async () => {
@@ -229,5 +232,33 @@ describe('Модельные опционы на акции США', () => {
     const o = ex.placeOrder({ category: 'option', symbol: row.call.inst.symbol, side: 'Buy', orderType: 'Market', qty: 5 });
     expect(o.status).toBe('Filled');
     expect(ex.main.positions[row.call.inst.symbol].size).toBe(5);
+  });
+});
+
+describe('Экспирация стратегии', () => {
+  it('все ноги, истекающие одновременно, приходят одним событием с итогом', async () => {
+    const { STRATEGIES, resolveStrategy, openStrategy } = await import('../src/engine/optionStrategies');
+    const warmV: [number, number, number, number][] = Array.from({ length: 24 * 40 }, (_, i) => {
+      const p = 100000 * (1 + 0.03 * Math.sin(i / 4));
+      return [p, p * 1.005, p * 0.995, p];
+    });
+    const ex = mkExchange({ BTCUSDT: flat(100000, 24 * 6) }, { initialBalance: 100_000 }, warmV);
+    const events: any[] = [];
+    ex.on((e) => {
+      if (e.type === 'expiry') events.push(e);
+    });
+    const exp = ex.optionExpiries('BTC')[1];
+    const strikes = ex.optionChain('BTC', exp).rows.map((r) => r.strike);
+    const atm = strikes.reduce((b, k, i) => (Math.abs(k - 100000) < Math.abs(strikes[b] - 100000) ? i : b), 0);
+    const r = resolveStrategy(ex, STRATEGIES.find((d) => d.key === 'iron_condor')!, 'BTC', strikes, atm, 1, exp, exp, 0.1);
+    expect(r.error).toBeUndefined();
+    expect(openStrategy(ex, r.legs).ok).toBe(true);
+    ex.quiet = true; // даже при «тихой» перемотке
+    ex.runTo(ex.market.totalBars);
+    expect(events.length).toBe(1);
+    expect(events[0].items.length).toBe(4);
+    const recs = ex.state.closedPnl.filter((c) => c.type === 'Delivery');
+    expect(recs.length).toBe(4);
+    expect(events[0].total).toBeCloseTo(recs.reduce((a, c) => a + c.closedPnl, 0), 6);
   });
 });

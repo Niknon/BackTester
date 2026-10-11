@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   BarSeries,
   CandlestickSeries,
@@ -18,7 +19,7 @@ import {
   type Time,
   type UTCTimestamp,
 } from 'lightweight-charts';
-import { getAsset, optionsAvailable, roundToStep } from '../../data/assets';
+import { getAsset, roundToStep } from '../../data/assets';
 import { bucketStart, chartIntervalsFor, intervalMs } from '../../data/intervals';
 import type { IntervalKey } from '../../data/types';
 import { lowerBound } from '../../data/types';
@@ -30,7 +31,7 @@ import { bump, toast, useSession, useTick, type IndicatorConfig } from '../../st
 import { useDrawings, type DrawTool } from '../../store/drawings';
 import { computeIndicator, heikinAshi, IND_META, indicatorLabel, type IndSeries } from './indicatorSeries';
 import { DrawingLayer } from './DrawingLayer';
-import { ChartOptionMenu } from './ChartOptionMenu';
+import { ChartContextMenu } from './ChartContextMenu';
 import { cx, Dropdown, Check, NumInput } from '../ui';
 
 const MAX_CANDLES = 6000;
@@ -147,12 +148,28 @@ export function PriceChart({
       if (ctxRef.current && !ctxRef.current.contains(e.target as Node)) setCtx(null);
     };
     const key = (e: KeyboardEvent) => e.key === 'Escape' && setCtx(null);
+    const close = () => setCtx(null);
     window.addEventListener('mousedown', down, true);
     window.addEventListener('keydown', key);
+    window.addEventListener('resize', close);
     return () => {
       window.removeEventListener('mousedown', down, true);
       window.removeEventListener('keydown', key);
+      window.removeEventListener('resize', close);
     };
+  }, [ctx]);
+
+  // меню — поверх страницы (не обрезается маленьким графиком); не даём ему уйти за нижний край окна
+  useLayoutEffect(() => {
+    const el = ctxRef.current;
+    if (!ctx || !el) return;
+    const fit = () => {
+      el.style.top = `${Math.max(4, Math.min(ctx.y, window.innerHeight - el.offsetHeight - 4))}px`;
+    };
+    fit();
+    const ro = new ResizeObserver(fit);
+    ro.observe(el);
+    return () => ro.disconnect();
   }, [ctx]);
 
   const tfMs = intervalMs(tf);
@@ -756,66 +773,28 @@ export function PriceChart({
             const r = e.currentTarget.getBoundingClientRect();
             const p = main.coordinateToPrice(e.clientY - r.top);
             if (p === null) return;
-            setCtx({ x: e.clientX - r.left, y: e.clientY - r.top, price: roundToStep(p as number, getAsset(symbol).tickSize) });
+            setCtx({ x: e.clientX, y: e.clientY, price: roundToStep(p as number, getAsset(symbol).tickSize) });
           }}
         />
-        {ctx && (
-          <div
-            ref={ctxRef}
-            className="absolute z-30 bg-panel2 border border-line2 rounded-md shadow-xl py-1 text-[12px] w-[290px]"
-            style={{
-              left: Math.max(0, Math.min(ctx.x, (wrapRef.current?.clientWidth ?? 400) - 295)),
-              top: Math.max(0, Math.min(ctx.y, (wrapRef.current?.clientHeight ?? 300) - (optionsAvailable(getAsset(symbol)) ? 390 : 140))),
-            }}
-          >
-            <div className="px-3 py-1 text-[10px] text-muted num">Цена {fmtPrice(ctx.price, symbol)}</div>
-            {onPriceClickRef.current && (
-              <button
-                className="w-full text-left px-3 py-1.5 hover:bg-panel3"
-                onClick={() => {
-                  onPriceClickRef.current?.(ctx.price);
-                  toast('info', `Цена ${fmtPrice(ctx.price, symbol)} подставлена в форму ордера`, undefined, 1800);
-                  setCtx(null);
-                }}
-              >
-                ✎ Подставить цену в форму ордера
-              </button>
-            )}
-            <button
-              className="w-full text-left px-3 py-1.5 hover:bg-panel3"
-              onClick={() => {
-                const a = ex.addAlert(symbol, ctx.price);
-                if (a) toast('info', `🔔 Алерт ${symbol} ${a.dir === 'up' ? '≥' : '≤'} ${fmtPrice(a.price, symbol)}`, 'Симуляция встанет на паузу при касании цены', 3000);
-                setCtx(null);
-                bump(true);
-              }}
+        {ctx &&
+          createPortal(
+            <div
+              ref={ctxRef}
+              data-ctx-menu
+              className="fixed z-[70] bg-panel2 border border-line2 rounded-md shadow-2xl text-[12px] flex flex-col overflow-hidden w-[330px] max-w-[96vw]"
+              style={{ left: Math.max(4, Math.min(ctx.x, window.innerWidth - 334)), top: ctx.y, maxHeight: window.innerHeight - 8 }}
+              onContextMenu={(e) => e.preventDefault()}
             >
-              🔔 Алерт на этой цене (пауза при касании)
-            </button>
-            <button
-              className="w-full text-left px-3 py-1.5 hover:bg-panel3"
-              onClick={() => {
-                navigator.clipboard?.writeText(String(ctx.price)).catch(() => {});
-                setCtx(null);
-              }}
-            >
-              ⧉ Скопировать цену
-            </button>
-            {ex.alerts(symbol).length > 0 && (
-              <button
-                className="w-full text-left px-3 py-1.5 hover:bg-panel3 text-muted"
-                onClick={() => {
-                  for (const a of ex.alerts(symbol)) ex.removeAlert(a.id);
-                  setCtx(null);
-                  bump(true);
-                }}
-              >
-                ✕ Удалить все алерты {symbol} ({ex.alerts(symbol).length})
-              </button>
-            )}
-            <ChartOptionMenu symbol={symbol} price={ctx.price} onDone={() => setCtx(null)} />
-          </div>
-        )}
+              <ChartContextMenu
+                symbol={symbol}
+                price={ctx.price}
+                category={category}
+                onClose={() => setCtx(null)}
+                onPriceToForm={onPriceClickRef.current ? (p) => onPriceClickRef.current?.(p) : undefined}
+              />
+            </div>,
+            document.body,
+          )}
         {legend && (
           <div className="absolute left-2 top-1.5 z-20 pointer-events-none text-[11px] num flex flex-wrap gap-x-2">
             <span className="text-text font-semibold">{symbol}</span>

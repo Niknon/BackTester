@@ -1,7 +1,7 @@
 import { useSession } from '../store/session';
 import { cx } from './ui';
 
-const ICON: Record<string, string> = {
+export const ICON: Record<string, string> = {
   info: 'ℹ',
   success: '✓',
   warn: '!',
@@ -10,7 +10,7 @@ const ICON: Record<string, string> = {
   sell: '▼',
 };
 
-const COLOR: Record<string, string> = {
+export const COLOR: Record<string, string> = {
   info: 'border-info/50 text-info',
   success: 'border-up/50 text-up',
   warn: 'border-brand/60 text-brand',
@@ -38,12 +38,12 @@ export function Toasts() {
         >
           <div className="font-bold text-[13px] w-4 text-center shrink-0">{ICON[t.kind]}</div>
           <div className="min-w-0">
-            <div className="text-text font-semibold truncate text-[12px]">{t.title}</div>
-            {t.text && <div className="text-muted text-[11px] break-words line-clamp-2">{t.text}</div>}
+            <div className="text-text font-semibold line-clamp-2 text-[12px]">{t.title}</div>
+            {t.text && <div className="text-muted text-[11px] break-words whitespace-pre-line line-clamp-10">{t.text}</div>}
           </div>
         </div>
       ))}
-      {toasts.length > 3 && <div className="text-center text-[10px] text-dim">ещё {toasts.length - 3}…</div>}
+      {toasts.length > 3 && <div className="text-center text-[10px] text-dim">ещё {toasts.length - 3} — все уведомления под 🔔 в шапке</div>}
     </div>
   );
 }

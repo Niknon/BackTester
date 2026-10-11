@@ -3,6 +3,7 @@ import { saveSession } from '../store/actions';
 import { cx } from './ui';
 import { fmtUsd, pnlClass, fmtPct } from '../lib/format';
 import { PositionsButton } from './positions/AllPositions';
+import { NoticeCenter } from './NoticeCenter';
 
 const NAV: { page: Page; label: string }[] = [
   { page: 'markets', label: 'Рынки' },
@@ -76,6 +77,7 @@ export function TopNav() {
           </button>
         ))}
       <div className="ml-auto flex items-center gap-2 xl:gap-3 shrink-0">
+        {hasEx && <NoticeCenter />}
         {hasEx && <PositionsButton />}
         {hasEx && <EquityBadge />}
         {hasEx && (

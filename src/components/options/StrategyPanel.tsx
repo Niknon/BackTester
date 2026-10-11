@@ -1,10 +1,12 @@
 import { useMemo, useState } from 'react';
-import { optionFee, optionQtyStep, parseOptionSymbol, shortOptionMargin } from '../../engine/options';
-import { legValueAt, openStrategy, resolveStrategy, STRATEGIES, VIEW_LABEL, type StrategyDef, type StrategyView } from '../../engine/optionStrategies';
-import { bump, toast, useSession, useTick } from '../../store/session';
+import { optionQtyStep } from '../../engine/options';
+import { resolveStrategy, STRATEGIES, VIEW_LABEL, type StrategyDef, type StrategyView } from '../../engine/optionStrategies';
+import { openStrategyAction } from '../../store/actions';
+import { useSession, useTick } from '../../store/session';
 import { exactDecimals, fmtNum, fmtShortDate, fmtUsd, pnlClass, autoDecimals } from '../../lib/format';
 import { cx, Empty, NumInput, Row, usePersistent } from '../ui';
-import { breakevens, PayoffChart, payoffAtExpiry, payoffNow, type PayoffLeg } from './PayoffChart';
+import { PayoffChart, payoffAtExpiry, payoffNow, type PayoffLeg } from './PayoffChart';
+import { payoffStats, strategyEconomics } from './strategyMath';
 import { dte } from './OptionPositions';
 
 const VIEW_COLOR: Record<StrategyView, string> = { bull: 'text-up', bear: 'text-down', neutral: 'text-info', vol: 'text-violet' };
@@ -69,59 +71,20 @@ export function StrategyPanel({
   const res = strikes.length ? resolveStrategy(ex, def, base, strikes, centerIdx, width, expiry, farExpiry, qty) : { legs: [], error: 'Нет цепочки' };
   const calendarBad = def.calendar && farExpiry <= expiry;
 
-  const fees = res.legs.map((l) => (l.category === 'option' ? optionFee(ex.config.fees.optionTaker, ex.config.fees.optionFeeCap, S, l.price, l.qty) : l.price * l.qty * ex.config.fees.linearTaker));
-  const payoff: PayoffLeg[] = res.legs.map((l, i) => {
-    const sign = l.side === 'Buy' ? 1 : -1;
-    if (l.type === 'F') return { type: 'F', strike: 0, qty: sign * l.qty, entry: l.price + (sign * fees[i]) / l.qty };
-    return {
-      type: l.type,
-      strike: l.strike,
-      qty: sign * l.qty,
-      entry: l.price + (sign * fees[i]) / l.qty,
-      valueNow: (x: number) => ex.optionQuote(l.symbol, x)?.mark ?? 0,
-      valueAtExpiry: l.expiry > expiry ? (x: number) => legValueAt(ex, l, x, expiry) : undefined,
-    };
-  });
-  const premium = res.legs.filter((l) => l.category === 'option').reduce((s, l) => s + (l.side === 'Sell' ? 1 : -1) * l.price * l.qty, 0);
-  const feeSum = fees.reduce((a, b) => a + b, 0);
-  const margin = res.legs.reduce((s, l) => {
-    if (l.type === 'F') return s + (l.price * l.qty) / ex.leverageOf(ex.main, l.symbol);
-    if (l.side !== 'Sell') return s;
-    return s + shortOptionMargin(ex.config.options, parseOptionSymbol(l.symbol)!, S, l.mark).im * l.qty;
-  }, 0);
+  const { payoff, premium, feeSum, margin } = strategyEconomics(ex, res.legs, expiry, S);
   const delta = res.legs.reduce((s, l) => s + l.delta, 0);
   const valid = !res.error && !calendarBad && res.legs.length === def.legs.length && Number.isFinite(S);
 
   // статистика профиля
   const stats = useMemo(() => {
     if (!valid) return null;
-    const lo = S * 0.02;
-    const hi = S * 3;
-    const f = (x: number) => payoffAtExpiry(payoff, x);
-    let maxP = -Infinity;
-    let minP = Infinity;
-    for (let i = 0; i <= 600; i++) {
-      const v = f(lo + ((hi - lo) * i) / 600);
-      maxP = Math.max(maxP, v);
-      minP = Math.min(minP, v);
-    }
-    const slope = f(S * 4) - f(S * 3);
-    const leftSlope = f(S * 0.02) - f(S * 0.04);
-    return {
-      maxP: slope > 1e-9 ? Infinity : maxP,
-      minP: slope < -1e-9 ? -Infinity : minP,
-      leftOpen: leftSlope,
-      bes: breakevens(payoff, lo, hi, 1500),
-    };
+    return payoffStats(payoff, S);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [valid, def.key, centerIdx, width, expiry, farExpiry, qty, S, ex.now]);
 
   const run = () => {
     if (!valid) return;
-    const r = openStrategy(ex, res.legs);
-    if (r.ok) toast('success', `Стратегия «${def.name}» открыта`, `${r.filled} ног по рынку · ${premium >= 0 ? 'кредит' : 'дебет'} ${fmtUsd(Math.abs(premium), 2)} USDT`, 6000);
-    else toast('error', 'Стратегия не открыта', `${r.error}. Уже исполненные ноги закрыты обратно.`, 9000);
-    bump(true);
+    openStrategyAction(def.name, res.legs);
   };
 
   const shown = list.filter((d) => viewF === 'all' || d.view === viewF);

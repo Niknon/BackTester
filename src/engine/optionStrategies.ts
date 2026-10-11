@@ -1,7 +1,7 @@
 import { getAsset, roundToStep } from '../data/assets';
 import type { Exchange } from './exchange';
 import { optionSymbol, quoteOption, parseOptionSymbol } from './options';
-import type { Side } from './types';
+import type { Order, Side } from './types';
 
 /**
  * Опционные стратегии: шаблоны ног относительно центрального страйка.
@@ -154,18 +154,24 @@ export function legValueAt(ex: Exchange, leg: ResolvedLeg, S: number, at: number
  * Открыть стратегию одним действием: все ноги по рынку.
  * Если какая-то нога отклонена — уже исполненные ноги закрываются (откат), чтобы не остаться с «половиной» стратегии.
  */
-export function openStrategy(ex: Exchange, legs: ResolvedLeg[], tag = 'user'): { ok: boolean; error?: string; filled: number } {
+export function openStrategy(
+  ex: Exchange,
+  legs: ResolvedLeg[],
+  tag = 'user',
+): { ok: boolean; error?: string; filled: number; fills: { leg: ResolvedLeg; order: Order }[] } {
   // сначала покупки (оплата премии), затем продажи (маржа под шорт)
   const order = [...legs].sort((a, b) => Number(a.side === 'Sell') - Number(b.side === 'Sell'));
-  const done: ResolvedLeg[] = [];
+  const done: { leg: ResolvedLeg; order: Order }[] = [];
   for (const l of order) {
     const o = ex.placeOrder({ category: l.category, symbol: l.symbol, side: l.side, orderType: 'Market', qty: l.qty, tag });
     if (o.status !== 'Filled') {
-      for (const d of done.reverse())
+      for (const { leg: d } of done.reverse())
         ex.placeOrder({ category: d.category, symbol: d.symbol, side: d.side === 'Buy' ? 'Sell' : 'Buy', orderType: 'Market', qty: d.qty, reduceOnly: true, tag });
-      return { ok: false, error: `${l.symbol}: ${o.rejectReason ?? o.status}`, filled: 0 };
+      return { ok: false, error: `${l.symbol}: ${o.rejectReason ?? o.status}`, filled: 0, fills: [] };
     }
-    done.push(l);
+    done.push({ leg: l, order: o });
   }
-  return { ok: true, filled: done.length };
+  // в исходном порядке ног стратегии
+  done.sort((a, b) => legs.indexOf(a.leg) - legs.indexOf(b.leg));
+  return { ok: true, filled: done.length, fills: done };
 }

@@ -11,6 +11,14 @@ export interface Toast {
   text?: string;
 }
 
+/** Запись в истории уведомлений (хранится вся сессия, не исчезает как всплывающее окно). */
+export interface Notice extends Toast {
+  /** время симуляции, когда пришло уведомление */
+  simTime: number | null;
+  /** реальное время */
+  at: number;
+}
+
 export interface IndicatorConfig {
   id: string;
   type: IndicatorType;
@@ -128,6 +136,9 @@ interface SessionState {
   positionsOpen: boolean;
   /** бот, выбранный для просмотра на странице ботов */
   focusBot: string | null;
+  /** история уведомлений и число непрочитанных */
+  notices: Notice[];
+  unread: number;
   set: (p: Partial<SessionState>) => void;
   setPrefs: (p: Partial<Prefs>) => void;
 }
@@ -149,6 +160,8 @@ export const useSession = create<SessionState>((set, get) => ({
   loadingSymbols: [],
   positionsOpen: false,
   focusBot: null,
+  notices: [],
+  unread: 0,
   set: (p) => set(p),
   setPrefs: (p) => {
     const prefs = { ...get().prefs, ...p };
@@ -171,9 +184,16 @@ export function bump(force = false) {
 }
 
 let toastId = 0;
+const NOTICE_CAP = 300;
 export function toast(kind: Toast['kind'], title: string, text?: string, ttl = 4500) {
   const id = ++toastId;
-  useSession.setState((s) => ({ toasts: [...s.toasts.slice(-5), { id, kind, title, text }] }));
+  const st = useSession.getState();
+  const notice: Notice = { id, kind, title, text, simTime: st.ex ? st.ex.now : null, at: Date.now() };
+  useSession.setState((s) => ({
+    toasts: [...s.toasts.slice(-5), { id, kind, title, text }],
+    notices: [...s.notices.slice(-(NOTICE_CAP - 1)), notice],
+    unread: s.unread + 1,
+  }));
   setTimeout(() => useSession.setState((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })), ttl);
 }
 

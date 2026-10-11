@@ -66,7 +66,7 @@ export function ChartOptionMenu({ symbol, price, onDone }: { symbol: string; pri
   };
 
   return (
-    <div className="border-t border-line mt-1 pt-1.5 px-2 pb-1 flex flex-col gap-1.5" onMouseDown={(e) => e.stopPropagation()}>
+    <div className="pt-1 px-2 pb-1 flex flex-col gap-1.5">
       <div className="text-[10px] text-muted px-1">
         Опцион по рынку · страйк <span className="text-text num font-semibold">{fmtNum(row.strike, kd)}</span>
         {Math.abs(row.strike - price) / price > 0.001 && <span> (уровень округлён до шага страйков {fmtNum(kStep, exactDecimals(kStep))})</span>}

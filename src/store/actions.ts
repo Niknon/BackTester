@@ -6,8 +6,9 @@ import type { ProviderId } from '../data/types';
 import { fetchDvol } from '../data/volatility';
 import { Exchange, MAIN, type ExchangeState } from '../engine/exchange';
 import { MarketData } from '../engine/market';
+import { openStrategy, type ResolvedLeg } from '../engine/optionStrategies';
 import type { ExchangeEvent, SessionConfig } from '../engine/types';
-import { fmtPrice, fmtQty, fmtUsd } from '../lib/format';
+import { exactDecimals, fmtNum, fmtPrice, fmtQty, fmtUsd, plural } from '../lib/format';
 import { bump, toast, useSession } from './session';
 
 let abort: AbortController | null = null;
@@ -143,9 +144,33 @@ function onEvent(ex: Exchange, e: ExchangeEvent) {
         if (st.prefs.pauseOnLiquidation) pause();
       }
       return;
-    case 'expiry':
-      if (e.accountId === MAIN) toast(e.pnl >= 0 ? 'success' : 'warn', `Экспирация ${e.symbol}`, `Результат ${fmtUsd(e.pnl, 2, true)} USDT`, 7000);
+    case 'expiry': {
+      if (e.accountId !== MAIN) return;
+      // одно уведомление на все ноги, рассчитанные в этот момент (например, стратегия из 4 опционов)
+      const insts = e.items.map((x) => ex.optionInstrument(x.symbol));
+      const bases = [...new Set(insts.map((i) => i?.base ?? ''))];
+      const multi = bases.length > 1;
+      const lines = e.items.map((x, i) => {
+        const inst = insts[i];
+        const name = inst ? `${multi ? `${inst.base} ` : ''}${fmtNum(x.strike, exactDecimals(x.strike))} ${x.type === 'C' ? 'колл' : 'пут'}` : x.symbol;
+        const q = Math.abs(x.size);
+        return `${x.size > 0 ? 'Лонг' : 'Шорт'} ${name} ×${fmtNum(q, exactDecimals(q, 4))}: ${x.payoff > 0 ? `в деньгах (${fmtNum(x.payoff, 2)})` : 'вне денег'} → ${fmtUsd(x.pnl, 2, true)}`;
+      });
+      const head = bases
+        .map((b) => {
+          const k = insts.findIndex((i) => i?.base === b);
+          const inst = insts[k];
+          return inst ? `${b} при расчёте: ${fmtPrice(e.items[k].underlyingPrice, inst.underlying)}` : '';
+        })
+        .filter(Boolean)
+        .join(' · ');
+      const title =
+        e.items.length === 1
+          ? `Экспирация ${e.items[0].symbol}: ${fmtUsd(e.total, 2, true)} USDT`
+          : `Экспирация ${e.items.length} ${plural(e.items.length, 'опциона', 'опционов', 'опционов')}: итог ${fmtUsd(e.total, 2, true)} USDT`;
+      toast(e.total >= 0 ? 'success' : 'warn', title, [head, ...lines].filter(Boolean).join('\n'), 12000);
       return;
+    }
     case 'bot':
       if (/ребалансировка/.test(e.message)) {
         if (st.prefs.notifyRebalance) toast('info', 'Ребалансировка', e.message, 4000);
@@ -171,7 +196,7 @@ export async function startSession(cfg: SessionConfig) {
   abort = new AbortController();
   const signal = abort.signal;
   pause();
-  useSession.setState({ status: 'loading', progress: { title: 'Загрузка исторических данных', message: '', done: 0, total: 1, errors: [] } });
+  useSession.setState({ status: 'loading', notices: [], unread: 0, progress: { title: 'Загрузка исторических данных', message: '', done: 0, total: 1, errors: [] } });
   const market = new MarketData(cfg.baseInterval, cfg.start, cfg.end);
   try {
     for (const sym of cfg.symbols) {
@@ -298,6 +323,47 @@ function frame(ts: number) {
   bump();
   if (useSession.getState().playing) raf = requestAnimationFrame(frame);
   else raf = 0;
+}
+
+/**
+ * Открыть опционную стратегию по рынку. Вместо отдельного уведомления на каждую ногу —
+ * одно сводное: все ноги с ценами исполнения, итоговая премия и комиссии.
+ */
+export function openStrategyAction(name: string, legs: ResolvedLeg[]): boolean {
+  const st = useSession.getState();
+  const ex = st.ex;
+  if (!ex) return false;
+  const quiet = ex.quiet;
+  ex.quiet = true; // глушим уведомления о каждой ноге (ликвидации всё равно проходят)
+  let r: ReturnType<typeof openStrategy>;
+  try {
+    r = openStrategy(ex, legs);
+  } finally {
+    ex.quiet = quiet;
+  }
+  if (!r.ok) {
+    toast('error', `Стратегия «${name}» не открыта`, `${r.error}. Уже исполненные ноги закрыты обратно.`, 9000);
+    bump(true);
+    return false;
+  }
+  saveCheckpoint(ex, `Стратегия ${name}`, true);
+  let premium = 0;
+  let fees = 0;
+  const lines = r.fills.map(({ leg: l, order: o }) => {
+    const sign = l.side === 'Sell' ? 1 : -1;
+    if (l.type !== 'F') premium += sign * o.avgPrice * o.filledQty;
+    fees += o.cumFee;
+    const what =
+      l.type === 'F'
+        ? `перп ${l.symbol}`
+        : `${l.type === 'C' ? 'колл' : 'пут'} ${fmtNum(l.strike, exactDecimals(l.strike))}${legs.some((x) => x.expiry !== l.expiry) ? ` (${new Date(l.expiry).toISOString().slice(5, 10)})` : ''}`;
+    return `${l.side === 'Buy' ? 'Купить' : 'Продать'} ${what} ×${fmtNum(o.filledQty, exactDecimals(o.filledQty, 4))} @ ${l.type === 'F' ? fmtPrice(o.avgPrice, l.symbol) : fmtNum(o.avgPrice, 2)}`;
+  });
+  const head = `${premium >= 0 ? 'Кредит' : 'Дебет'} ${fmtUsd(Math.abs(premium), 2)} USDT · комиссии ${fmtUsd(fees, 2)}`;
+  toast('success', `Стратегия «${name}» открыта (${r.filled} ${plural(r.filled, 'нога', 'ноги', 'ног')})`, [head, ...lines].join('\n'), 9000);
+  if (st.prefs.pauseOnFill) pause();
+  bump(true);
+  return true;
 }
 
 export function play() {

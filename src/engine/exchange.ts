@@ -33,6 +33,7 @@ import type {
   PlaceOrderRequest,
   Position,
   PriceAlert,
+  ExpiryItem,
   SessionConfig,
   Side,
 } from './types';
@@ -1257,6 +1258,7 @@ export class Exchange {
   /** Экспирация опционов: расчёт по цене базового актива. */
   private settleOptions(until: number) {
     for (const acc of Object.values(this.state.accounts)) {
+      const items: ExpiryItem[] = [];
       for (const pos of Object.values(acc.positions)) {
         if (pos.category !== 'option') continue;
         const inst = this.optionInstrument(pos.symbol)!;
@@ -1304,8 +1306,15 @@ export class Exchange {
           closedPnl: gross,
           tag: 'delivery',
         });
-        this.emit({ type: 'expiry', accountId: acc.id, symbol: pos.symbol, pnl: gross - pos.openFee - fee });
+        items.push({ symbol: pos.symbol, size: pos.size, strike: inst.strike, type: inst.type, underlyingPrice: S, payoff, pnl: gross - pos.openFee - fee });
         delete acc.positions[pos.symbol];
+      }
+      if (items.length) {
+        // одно событие на все ноги; важно и при «тихой» перемотке
+        const quiet = this.quiet;
+        this.quiet = false;
+        this.emit({ type: 'expiry', accountId: acc.id, time: Math.min(this.eventTime(), ...items.map((x) => this.optionInstrument(x.symbol)!.expiry)), items, total: items.reduce((a, x) => a + x.pnl, 0) });
+        this.quiet = quiet;
       }
     }
     for (const o of this.activeOrders()) {

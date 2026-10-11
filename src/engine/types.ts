@@ -268,6 +268,20 @@ export interface PlaceOrderRequest {
   quoteQty?: number;
 }
 
+export interface ExpiryItem {
+  symbol: string;
+  /** размер позиции со знаком */
+  size: number;
+  strike: number;
+  type: 'C' | 'P';
+  /** цена базового актива при расчёте */
+  underlyingPrice: number;
+  /** выплата на контракт (внутренняя стоимость) */
+  payoff: number;
+  /** итоговый PnL позиции (с комиссиями) */
+  pnl: number;
+}
+
 /** Ценовой алерт: при касании цены симуляция ставится на паузу. */
 export interface PriceAlert {
   id: string;
@@ -286,6 +300,7 @@ export type ExchangeEvent =
   | { type: 'reject'; order: Order; reason: string }
   | { type: 'liquidation'; accountId: string; symbol: string; loss: number }
   | { type: 'funding'; accountId: string; symbol: string; amount: number }
-  | { type: 'expiry'; accountId: string; symbol: string; pnl: number }
+  /** экспирация: все опционы аккаунта, рассчитанные в один момент (например, все ноги стратегии) */
+  | { type: 'expiry'; accountId: string; time: number; items: ExpiryItem[]; total: number }
   | { type: 'bot'; botId: string; message: string; level: 'info' | 'warn' | 'error' }
   | { type: 'info'; message: string };
