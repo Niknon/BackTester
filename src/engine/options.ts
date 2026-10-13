@@ -215,23 +215,33 @@ export function niceNumber(x: number): number {
   return Number(best.toPrecision(6));
 }
 
-export function strikeStep(S: number, T: number): number {
+/**
+ * Шаг страйков у ATM. Крипта — как у Bybit: дневные 0.5% (BTC 500), недельные и
+ * месячные 1% (BTC 1 000), дальние 2% (BTC 2 000). Акции/ETF/сырьё — как на биржах США:
+ * короткие 0.4% (AAPL $1), месячные 1% (AAPL $2.5), дальние 2% (AAPL $5).
+ */
+export type StrikeStyle = 'crypto' | 'equity';
+export function strikeStep(S: number, T: number, style: StrikeStyle = 'crypto'): number {
   const days = T * 365;
-  const frac = days <= 2.5 ? 0.005 : days <= 10 ? 0.01 : days <= 40 ? 0.025 : 0.05;
+  const frac = style === 'equity' ? (days <= 10 ? 0.004 : days <= 40 ? 0.01 : 0.02) : days <= 2.5 ? 0.005 : days <= 40 ? 0.01 : 0.02;
   return niceNumber(S * frac);
 }
 
-export function listStrikes(S: number, T: number, atmIv: number, maxPerSide = 20): number[] {
-  const step = strikeStep(S, T);
+/** Цепочка страйков: у денег — мелкий шаг, на крыльях — крупный (×5), как в реальных цепочках. */
+export function listStrikes(S: number, T: number, atmIv: number, style: StrikeStyle = 'crypto'): number[] {
+  const step = strikeStep(S, T, style);
+  const coarse = niceNumber(step * 5);
   const range = S * Math.max(0.06, Math.min(0.9, 3 * atmIv * Math.sqrt(Math.max(T, 1 / 365))));
-  const n = Math.min(maxPerSide, Math.max(4, Math.ceil(range / step)));
+  const inner = Math.min(12, Math.max(4, Math.ceil(range / step)));
   const center = Math.round(S / step) * step;
-  const out: number[] = [];
-  for (let i = -n; i <= n; i++) {
-    const k = Number((center + i * step).toPrecision(10));
-    if (k > 0) out.push(k);
-  }
-  return out;
+  const set = new Set<number>();
+  const add = (k: number) => k > 0 && set.add(Number(k.toPrecision(10)));
+  for (let i = -inner; i <= inner; i++) add(center + i * step);
+  const hiIn = center + inner * step;
+  const loIn = center - inner * step;
+  for (let k = Math.floor(hiIn / coarse + 1) * coarse, n = 0; k <= center + range && n < 10; k += coarse, n++) add(k);
+  for (let k = Math.ceil(loIn / coarse - 1) * coarse, n = 0; k >= center - range && k > 0 && n < 10; k -= coarse, n++) add(k);
+  return [...set].sort((a, b) => a - b);
 }
 
 export function optionTickSize(S: number): number {
@@ -271,11 +281,26 @@ export function atmIv(cfg: OptionModelConfig, inp: VolInputs, T: number): number
   return Math.max(0.05, Math.min(5, base * cfg.ivPremium * shortBump));
 }
 
-/** IV для страйка K: улыбка по стандартизованной денежности x = ln(K/F)/(σ√T). */
+/**
+ * IV для страйка K: улыбка по стандартизованной денежности x = ln(K/F)/(σ√T).
+ * Параболу 1 + skew·x + smile·x² применяем к «сжатой» денежности u = X0·tanh(x/X0):
+ * у центра это та же парабола, а на крыльях IV выходит на плато. Без сжатия IV на
+ * дальних страйках росла быстрее денежности, и дальний OTM-опцион стоил дороже
+ * ближнего (арбитраж вертикального спреда).
+ */
+const SMILE_X0 = 2.5;
+export const SKEW_MAX = 0.2;
+export const SMILE_MAX = 0.3;
 export function smileIv(cfg: OptionModelConfig, atm: number, F: number, K: number, T: number): number {
   const sd = atm * Math.sqrt(Math.max(T, 1 / (365 * 24)));
-  const x = Math.max(-4, Math.min(4, Math.log(K / F) / sd));
-  const mult = 1 + cfg.skew * x + cfg.smile * x * x;
+  const x = Math.log(K / F) / sd;
+  // параметры в безарбитражных пределах (проверено тестом на сетке сроков и волатильностей)
+  const skew = Math.max(-SKEW_MAX, Math.min(SKEW_MAX, cfg.skew));
+  const smile = Math.max(0, Math.min(SMILE_MAX, cfg.smile));
+  // при крутой улыбке плато наступает раньше
+  const x0 = Math.min(SMILE_X0, smile > 0 ? Math.sqrt(0.6 / smile) : SMILE_X0);
+  const u = x0 * Math.tanh(x / x0);
+  const mult = 1 + skew * u + smile * u * u;
   return Math.max(atm * 0.5, Math.min(atm * 3, atm * mult));
 }
 
@@ -307,7 +332,10 @@ export function quoteOption(cfg: OptionModelConfig, inst: OptionInstrument, S: n
   const greeks = blackScholes(S, inst.strike, T, iv, inst.type);
   const tick = optionTickSize(S);
   const mark = greeks.price;
-  const half = Math.max(tick, mark * cfg.spreadPct * 0.5);
+  // спред — от временной стоимости (её и котирует маркет-мейкер) плюс небольшая доля внутренней:
+  // раньше у глубоких ITM спред считался от всей премии и bid уходил заметно ниже внутренней стоимости
+  const intrinsic = inst.type === 'C' ? Math.max(0, S - inst.strike) : Math.max(0, inst.strike - S);
+  const half = Math.max(tick, (Math.max(0, mark - intrinsic) + 0.1 * intrinsic) * cfg.spreadPct * 0.5);
   const bid = mark - half >= tick ? roundTick(mark - half, tick, 'floor') : 0;
   const ask = Math.max(tick, roundTick(mark + half, tick, 'ceil'));
   return { inst, underlyingPrice: S, T, iv, mark, bid, ask, greeks };

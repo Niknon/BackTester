@@ -388,6 +388,11 @@ export function hasAsset(symbol: string) {
 }
 
 /** Можно ли торговать опционами на этот актив в симуляторе (Bybit или модельные). */
+/** Сетка страйков: у крипто-опционов — как на Bybit, у модельных опционов на акции/сырьё — как на биржах США. */
+export function strikeStyle(spec: AssetSpec): 'crypto' | 'equity' {
+  return spec.simOptions ? 'equity' : 'crypto';
+}
+
 export function optionsAvailable(spec: AssetSpec) {
   return !spec.spotOnly && (spec.hasOptions || !!spec.simOptions);
 }

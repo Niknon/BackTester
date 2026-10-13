@@ -32,6 +32,8 @@ import { useDrawings, type DrawTool } from '../../store/drawings';
 import { computeIndicator, heikinAshi, IND_META, indicatorLabel, type IndSeries } from './indicatorSeries';
 import { DrawingLayer } from './DrawingLayer';
 import { ChartContextMenu } from './ChartContextMenu';
+import { NewsLayer } from '../news/NewsLayer';
+import { NewsMenu } from '../news/NewsMenu';
 import { cx, Dropdown, Check, NumInput } from '../ui';
 
 const MAX_CANDLES = 6000;
@@ -139,6 +141,7 @@ export function PriceChart({
   const hoverRef = useRef(false);
   const onPriceClickRef = useRef(onPriceClick);
   onPriceClickRef.current = onPriceClick;
+  const chartPreview = useSession((s) => s.chartPreview);
   const [ctx, setCtx] = useState<{ x: number; y: number; price: number } | null>(null);
   const ctxRef = useRef<HTMLDivElement>(null);
   // меню закрывается кликом вне его или клавишей Esc
@@ -395,7 +398,7 @@ export function PriceChart({
     }
     updateOverlays();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [v, symbol, tf, chartType, indKey, chart, prefs.showExecutions, prefs.showOrders, prefs.showBotGrids, prefs.showBotTrades, extraLines, accountId, category, fitKey, readOnly, orderLines, otherBots]);
+  }, [v, symbol, tf, chartType, indKey, chart, prefs.showExecutions, prefs.showOrders, prefs.showBotGrids, prefs.showBotTrades, extraLines, accountId, category, fitKey, readOnly, orderLines, otherBots, chartPreview]);
 
   /* ── маркеры сделок и линии ордеров/позиций ── */
   function updateOverlays() {
@@ -405,7 +408,8 @@ export function PriceChart({
     if (!c || !main || !d) return;
     const cats: Category[] = category === 'option' ? ['linear'] : [category];
     // автоподстройка шкалы под заданные цены
-    const fp = fitPrices?.filter(Number.isFinite) ?? [];
+    // (и под предпросмотр стратегии — чтобы страйки и безубыточность были видны)
+    const fp = [...(fitPrices ?? []), ...(chartPreview?.symbol === symbol ? chartPreview.lines.map((l) => l.price) : [])].filter(Number.isFinite);
     const nextFit: [number, number] | null = fp.length ? [Math.min(...fp), Math.max(...fp)] : null;
     const prevFit = fitRef.current;
     if ((nextFit?.join() ?? '') !== (prevFit?.join() ?? '')) {
@@ -543,6 +547,10 @@ export function PriceChart({
       want.push({ id: `alert:${a.id}`, price: a.price, color: '#fbbf24', title: `🔔 ${a.note || 'Алерт'}${readOnly ? '' : ' ⇕'}`, style: LineStyle.LargeDashed, drag: readOnly ? undefined : 'custom' });
     }
     if (extraLines) want.push(...extraLines);
+    // предпросмотр из меню правой кнопки: страйки ног и безубыточность (до открытия)
+    if (chartPreview && chartPreview.symbol === symbol)
+      for (const l of chartPreview.lines)
+        want.push({ id: `pv:${l.id}`, price: l.price, color: l.color, title: l.title, style: l.kind === 'be' ? LineStyle.Dotted : LineStyle.SparseDotted, width: l.kind === 'leg' ? 2 : 1 });
     const seen = new Set<string>();
     for (const w of want) {
       if (!Number.isFinite(w.price)) continue;
@@ -659,7 +667,7 @@ export function PriceChart({
     <div className="h-full flex flex-col bg-panel rounded-lg overflow-hidden">
       <div className="flex items-center gap-1 px-2 h-9 border-b border-line shrink-0 overflow-x-auto">
         {tfs.map((d) => (
-          <button key={d.key} className={cx('chip', tf === d.key && 'active')} onClick={() => onTfChange?.(d.key)}>
+          <button key={d.key} className={cx('chip !px-1.5 2xl:!px-[9px]', tf === d.key && 'active')} onClick={() => onTfChange?.(d.key)}>
             {d.label}
           </button>
         ))}
@@ -698,6 +706,7 @@ export function PriceChart({
           </Dropdown>
         )}
         <div className="ml-auto flex items-center gap-1 shrink-0">
+          {!compact && <NewsMenu />}
           <button className="chip" title="К последней свече" onClick={() => chartRef.current?.timeScale().scrollToRealTime()}>
             ⇥
           </button>
@@ -795,6 +804,7 @@ export function PriceChart({
             </div>,
             document.body,
           )}
+        {!compact && chart && <NewsLayer chart={chart} times={() => dataRef.current?.agg.t ?? null} tfMs={tfMs} symbol={symbol} />}
         {legend && (
           <div className="absolute left-2 top-1.5 z-20 pointer-events-none text-[11px] num flex flex-wrap gap-x-2">
             <span className="text-text font-semibold">{symbol}</span>
@@ -843,7 +853,15 @@ function IndicatorsMenu() {
   const upd = (id: string, patch: Partial<IndicatorConfig>) => setPrefs({ indicators: prefs.indicators.map((i) => (i.id === id ? { ...i, ...patch } : i)) });
   const n = prefs.indicators.filter((i) => i.enabled).length;
   return (
-    <Dropdown button={<button className="chip">ƒx Индикаторы{n ? ` (${n})` : ''}</button>} width={300}>
+    <Dropdown
+      button={
+        <button className="chip" title="Индикаторы">
+          ƒx<span className="hidden 2xl:inline"> Индикаторы</span>
+          {n ? ` (${n})` : ''}
+        </button>
+      }
+      width={300}
+    >
       <div className="p-2 flex flex-col gap-1">
         {prefs.indicators.map((i) => (
           <div key={i.id} className="flex items-center gap-2 py-0.5">

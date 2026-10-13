@@ -7,8 +7,16 @@ import {
   niceNumber,
   optionSymbol,
   parseOptionSymbol,
+  strikeStep,
 } from '../src/engine/options';
 import { flat, mkExchange, T0 } from './helpers';
+
+function volatileWarmup(): [number, number, number, number][] {
+  return Array.from({ length: 24 * 40 }, (_, i) => {
+    const p = 100000 * (1 + 0.03 * Math.sin(i / 4));
+    return [p, p * 1.005, p * 0.995, p];
+  });
+}
 import { HOUR } from '../src/data/intervals';
 import { MAIN } from '../src/engine/exchange';
 
@@ -66,9 +74,21 @@ describe('Инструменты и экспирации', () => {
   it('страйки кратны «красивому» шагу', () => {
     expect(niceNumber(415)).toBe(500);
     const ks = listStrikes(83000, 2 / 365, 0.5);
-    const step = ks[1] - ks[0];
-    expect(step).toBe(500);
+    // у денег — шаг 500 (дневные BTC), на крыльях — крупнее
+    const atm = ks.findIndex((k) => k === 83000);
+    expect(ks[atm + 1] - ks[atm]).toBe(500);
+    expect(ks[ks.length - 1] - ks[ks.length - 2]).toBeGreaterThan(500);
     for (const k of ks) expect(k % 500).toBe(0);
+  });
+
+  it('шаг страйков: крипта как на Bybit, акции как на биржах США', () => {
+    expect(strikeStep(100000, 1 / 365)).toBe(500);
+    expect(strikeStep(100000, 7 / 365)).toBe(1000);
+    expect(strikeStep(100000, 30 / 365)).toBe(1000);
+    expect(strikeStep(100000, 90 / 365)).toBe(2000);
+    expect(strikeStep(230, 7 / 365, 'equity')).toBe(1);
+    expect(strikeStep(230, 30 / 365, 'equity')).toBe(2.5);
+    expect(strikeStep(230, 90 / 365, 'equity')).toBe(5);
   });
 });
 
@@ -135,7 +155,8 @@ describe('Торговля опционами', () => {
 describe('Опционные стратегии', () => {
   it('железный кондор: 4 ноги одним действием, кредит, позиции открыты', async () => {
     const { STRATEGIES, resolveStrategy, openStrategy } = await import('../src/engine/optionStrategies');
-    const ex = mkExchange({ BTCUSDT: flat(100000, 48) }, { initialBalance: 100_000 }, flat(100000, 24 * 40));
+    // история с колебаниями: при нулевой волатильности дальние OTM-ноги ничего не стоят (bid = 0)
+    const ex = mkExchange({ BTCUSDT: flat(100000, 48) }, { initialBalance: 100_000 }, volatileWarmup());
     const exp = ex.optionExpiries('BTC')[3];
     const chain = ex.optionChain('BTC', exp);
     const strikes = chain.rows.map((r) => r.strike);
@@ -260,5 +281,46 @@ describe('Экспирация стратегии', () => {
     const recs = ex.state.closedPnl.filter((c) => c.type === 'Delivery');
     expect(recs.length).toBe(4);
     expect(events[0].total).toBeCloseTo(recs.reduce((a, c) => a + c.closedPnl, 0), 6);
+  });
+});
+
+describe('модель цены опционов', () => {
+  it('нет арбитража по страйкам: дальний OTM не дороже ближнего, цены выпуклы', async () => {
+    const { quoteOption, SKEW_MAX, SMILE_MAX } = await import('../src/engine/options');
+    const { DEFAULT_OPTION_MODEL } = await import('../src/engine/types');
+    const S = 100000;
+    const now = Date.UTC(2025, 0, 1, 8);
+    for (const [skew, smile] of [
+      [DEFAULT_OPTION_MODEL.skew, DEFAULT_OPTION_MODEL.smile],
+      [-SKEW_MAX, SMILE_MAX],
+      [SKEW_MAX, SMILE_MAX],
+      [-1, 2], // за пределами — параметры ограничиваются
+    ]) {
+      const cfg = { ...DEFAULT_OPTION_MODEL, skew, smile };
+      for (const days of [0.05, 1, 7, 30, 180]) {
+        for (const rv of [0.2, 0.6, 1.5]) {
+          const vol = { rv7: rv, rv30: rv, dvol: null };
+          const ks: number[] = [];
+          for (let k = S * 0.4; k <= S * 2; k += S * 0.002) ks.push(k);
+          for (const type of ['C', 'P'] as const) {
+            const px = ks.map((k) => quoteOption(cfg, { symbol: '', base: 'BTC', underlying: 'BTCUSDT', strike: k, type, expiry: now + days * 86400000 }, S, now, vol).mark);
+            for (let i = 1; i < px.length; i++) {
+              if (type === 'C') expect(px[i]).toBeLessThanOrEqual(px[i - 1] + 1e-6 * S);
+              else expect(px[i]).toBeGreaterThanOrEqual(px[i - 1] - 1e-6 * S);
+              if (i > 1) expect(px[i] - 2 * px[i - 1] + px[i - 2]).toBeGreaterThanOrEqual(-1e-6 * S);
+            }
+          }
+        }
+      }
+    }
+  });
+
+  it('глубокий ITM: bid не уходит далеко ниже внутренней стоимости', async () => {
+    const { quoteOption } = await import('../src/engine/options');
+    const { DEFAULT_OPTION_MODEL } = await import('../src/engine/types');
+    const now = Date.UTC(2025, 0, 1, 8);
+    const q = quoteOption(DEFAULT_OPTION_MODEL, { symbol: '', base: 'BTC', underlying: 'BTCUSDT', strike: 80000, type: 'C', expiry: now + 7 * 86400000 }, 100000, now, { rv7: 0.5, rv30: 0.5, dvol: null });
+    expect(q.bid).toBeGreaterThan(20000 - 100);
+    expect(q.ask - q.bid).toBeLessThan(100);
   });
 });

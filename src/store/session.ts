@@ -56,7 +56,25 @@ export interface Prefs {
   autosave: boolean;
   notifyRebalance: boolean;
   pauseOnAlert: boolean;
+  news: NewsPrefs;
 }
+
+/** События на графике: экономический календарь, отчёты компаний, крипто-события. */
+export interface NewsPrefs {
+  enabled: boolean;
+  macro: boolean;
+  countries: string[];
+  /** 1 — только важные, 0 — важные и средние */
+  minImportance: 0 | 1;
+  corporate: boolean;
+  crypto: boolean;
+  /** уведомление при выходе важной новости во время воспроизведения */
+  notify: boolean;
+  /** пауза за один бар до важной новости */
+  pauseBefore: boolean;
+}
+
+export const DEFAULT_NEWS: NewsPrefs = { enabled: true, macro: true, countries: ['US'], minImportance: 1, corporate: true, crypto: true, notify: true, pauseBefore: false };
 
 export const DEFAULT_INDICATORS: IndicatorConfig[] = [
   { id: 'vol', type: 'VOL', params: [], enabled: true },
@@ -93,6 +111,7 @@ function loadPrefs(): Prefs {
     autosave: true,
     notifyRebalance: true,
     pauseOnAlert: true,
+    news: DEFAULT_NEWS,
   };
   try {
     const raw = localStorage.getItem(PREFS_KEY);
@@ -101,7 +120,7 @@ function loadPrefs(): Prefs {
     // новые индикаторы из дефолтов добавляем к сохранённым
     const ids = new Set((p.indicators || []).map((i: IndicatorConfig) => i.id));
     const indicators = [...(p.indicators || []), ...DEFAULT_INDICATORS.filter((i) => !ids.has(i.id))];
-    return { ...def, ...p, indicators };
+    return { ...def, ...p, indicators, news: { ...DEFAULT_NEWS, ...(p.news || {}) } };
   } catch {
     return def;
   }
@@ -139,8 +158,24 @@ interface SessionState {
   /** история уведомлений и число непрочитанных */
   notices: Notice[];
   unread: number;
+  /** предпросмотр уровней на графике (страйки и безубыточность стратегии из меню правой кнопки) */
+  chartPreview: ChartPreview | null;
   set: (p: Partial<SessionState>) => void;
   setPrefs: (p: Partial<Prefs>) => void;
+}
+
+export interface PreviewLine {
+  id: string;
+  price: number;
+  color: string;
+  title: string;
+  /** leg — страйк ноги, be — безубыточность */
+  kind: 'leg' | 'be';
+}
+
+export interface ChartPreview {
+  symbol: string;
+  lines: PreviewLine[];
 }
 
 export const useSession = create<SessionState>((set, get) => ({
@@ -162,6 +197,7 @@ export const useSession = create<SessionState>((set, get) => ({
   focusBot: null,
   notices: [],
   unread: 0,
+  chartPreview: null,
   set: (p) => set(p),
   setPrefs: (p) => {
     const prefs = { ...get().prefs, ...p };

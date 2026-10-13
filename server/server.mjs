@@ -6,7 +6,7 @@ import https from 'node:https';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { PROXY_TARGETS } from './proxy-targets.mjs';
+import { PROXY_TARGETS, proxyTarget } from './proxy-targets.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST = path.resolve(__dirname, '..', 'dist');
@@ -24,14 +24,15 @@ const MIME = {
   '.woff2': 'font/woff2',
 };
 
-function proxy(req, res, prefix, target) {
+function proxy(req, res, prefix, value) {
+  const { target, headers } = proxyTarget(value);
   const url = new URL(req.url.slice(prefix.length) || '/', target);
   const upstream = https.request(
     url,
     {
       method: req.method,
-      // Yahoo без «браузерного» User-Agent отвечает 429
-      headers: { accept: 'application/json', 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130 Safari/537.36 BackTester/0.1' },
+      // Yahoo без «браузерного» User-Agent отвечает 429; отдельным источникам нужны свои заголовки
+      headers: { accept: '*/*', 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130 Safari/537.36 BackTester/0.1', ...headers },
     },
     (up) => {
       res.writeHead(up.statusCode || 502, {
@@ -68,8 +69,8 @@ function serveStatic(req, res) {
 
 http
   .createServer((req, res) => {
-    for (const [prefix, target] of Object.entries(PROXY_TARGETS)) {
-      if (req.url.startsWith(prefix + '/')) return proxy(req, res, prefix, target);
+    for (const [prefix, value] of Object.entries(PROXY_TARGETS)) {
+      if (req.url.startsWith(prefix + '/')) return proxy(req, res, prefix, value);
     }
     serveStatic(req, res);
   })

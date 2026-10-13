@@ -5,6 +5,7 @@ import { PROVIDER_LIST } from '../data/loader';
 import type { IntervalKey, ProviderId } from '../data/types';
 import { idbClear } from '../data/cache';
 import { fetchBybitOptionBases, syncInstrumentsFromBybit, syncSpotTradFiFromBybit } from '../data/providers/bybit';
+import { SKEW_MAX, SMILE_MAX } from '../engine/options';
 import { DEFAULT_FEES, DEFAULT_OPTION_MODEL, type SessionConfig } from '../engine/types';
 import {
   deleteSession,
@@ -250,6 +251,12 @@ export function SetupPage() {
   const totalBars = bars * symbols.length;
   const warm = warmup === '' ? autoWarmup(base) : warmup;
   const heavy = totalBars > 3_000_000;
+  // акции на внутридневном интервале старше лимитов Yahoo — подсказка про Dukascopy
+  const stockIntraday =
+    provider !== 'synthetic' &&
+    intervalMs(base) < DAY &&
+    symbols.some((s) => hasAsset(s) && !!getAsset(s).yahoo) &&
+    Date.now() - (start - warm * DAY) > (intervalMs(base) >= 3_600_000 ? 729 : 59) * DAY;
   const requests = Math.ceil(((end - start + warm * DAY) / intervalMs(base) / 1000) * symbols.length);
 
   const applyPreset = (k: string) => {
@@ -374,6 +381,14 @@ export function SetupPage() {
             <div>
               <div className="text-[11px] text-muted mb-1.5">Базовый интервал симуляции (точность исполнения ордеров)</div>
               <Segmented value={base} onChange={setBase} options={baseOpts.map((d) => ({ value: d.key, label: d.label }))} />
+              {stockIntraday && (
+                <div className="text-[11px] text-muted mt-1.5 leading-snug">
+                  Акции/индексы/сырьё: Yahoo даёт {intervalMs(base) >= 3_600_000 ? '1ч за последние 2 года' : '5–30 мин за последние 60 дней'}, более старые
+                  внутридневные свечи берутся из архива Dukascopy (акции — с 2017 г.). Он ограничивает частоту запросов, поэтому
+                  {intervalMs(base) < 3_600_000 ? ' минутная история за годы качается долго — для длинных периодов удобнее 1ч.' : ' первая загрузка может занять несколько минут.'}{' '}
+                  Скачанное кешируется.
+                </div>
+              )}
             </div>
             <div className="grid grid-cols-2 gap-3">
               <NumInput label="История до старта" suffix="дн." value={warmup === '' ? '' : warmup} placeholder={`авто: ${autoWarmup(base)}`} onChange={setWarmup} />
@@ -464,8 +479,8 @@ export function SetupPage() {
                   />
                   <NumInput label="Премия к RV" suffix="×" value={opt.ivPremium} step={0.05} onChange={(v) => setOpt({ ...opt, ivPremium: Number(v) || 1 })} />
                   <NumInput label="Фикс. IV" suffix="%" value={opt.fixedIv * 100} step={5} onChange={(v) => setOpt({ ...opt, fixedIv: (Number(v) || 0) / 100 })} />
-                  <NumInput label="Скос (skew)" value={opt.skew} step={0.01} onChange={(v) => setOpt({ ...opt, skew: Number(v) || 0 })} />
-                  <NumInput label="Улыбка (smile)" value={opt.smile} step={0.01} onChange={(v) => setOpt({ ...opt, smile: Number(v) || 0 })} />
+                  <NumInput label="Скос (skew)" value={opt.skew} step={0.01} min={-SKEW_MAX} max={SKEW_MAX} title={`Наклон улыбки: от −${SKEW_MAX} до ${SKEW_MAX} (отрицательный — путы дороже)`} onChange={(v) => setOpt({ ...opt, skew: Math.max(-SKEW_MAX, Math.min(SKEW_MAX, Number(v) || 0)) })} />
+                  <NumInput label="Улыбка (smile)" value={opt.smile} step={0.01} min={0} max={SMILE_MAX} title={`Кривизна улыбки: от 0 до ${SMILE_MAX}`} onChange={(v) => setOpt({ ...opt, smile: Math.max(0, Math.min(SMILE_MAX, Number(v) || 0)) })} />
                   <NumInput label="Спред bid/ask" suffix="%" value={opt.spreadPct * 100} step={0.5} onChange={(v) => setOpt({ ...opt, spreadPct: (Number(v) || 0) / 100 })} />
                 </div>
               </>

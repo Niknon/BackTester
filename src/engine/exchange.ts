@@ -1,4 +1,4 @@
-import { getAsset, maintenanceMarginRate, qtyStepFor, roundToStep } from '../data/assets';
+import { getAsset, maintenanceMarginRate, qtyStepFor, roundToStep, strikeStyle } from '../data/assets';
 import { HOUR } from '../data/intervals';
 import { dvolAt, realizedVolAt } from '../data/volatility';
 import type { MarketData } from './market';
@@ -294,7 +294,7 @@ export class Exchange {
     const T = yearsTo(expiry, this.state.now);
     const vol = this.volInputs(underlying);
     const atm = atmIv(this.config.options, vol, T);
-    const strikes = listStrikes(S, T, atm);
+    const strikes = listStrikes(S, T, atm, strikeStyle(getAsset(underlying)));
     // страйки открытых позиций и ордеров тоже показываем
     const used = [
       ...Object.values(this.state.accounts).flatMap((a) => Object.keys(a.positions)),

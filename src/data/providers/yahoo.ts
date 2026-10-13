@@ -31,7 +31,7 @@ function tickerOf(symbol: string) {
   return a.yahoo;
 }
 
-interface RawBar {
+export interface RawBar {
   t: number;
   o: number;
   h: number;
@@ -62,7 +62,33 @@ async function chart(ticker: string, yi: string, from: number, to: number, signa
     if (![o, h, l, c].every((x) => typeof x === 'number' && Number.isFinite(x) && x > 0)) continue;
     out.push({ t: ts[i] * 1000, o, h: Math.max(h, o, c), l: Math.min(l, o, c), c, v: Number(q.volume?.[i]) || 0 });
   }
-  return out;
+  return yi === '1d' ? out : cleanExtendedHours(out);
+}
+
+/**
+ * В свечах пре- и постмаркета (у Yahoo объём = 0) бывают ошибочные принты: NVDA 09.07.2025 20:00 UTC —
+ * high 181.98, low 100.19, close 115.79 при цене ~163. В бэктесте такие «шпильки» ложно срабатывали бы
+ * стопами и ликвидациями. Тени таких свечей ограничиваем, а выбросы открытия/закрытия заменяем соседними ценами.
+ */
+export function cleanExtendedHours(bars: RawBar[]): RawBar[] {
+  const WICK = 0.01;
+  const SPIKE = 0.05;
+  for (let i = 0; i < bars.length; i++) {
+    const b = bars[i];
+    if (b.v > 0) continue;
+    const prev = bars[i - 1];
+    const next = bars[i + 1];
+    const dev = (x: number, ref: number) => Math.abs(x / ref - 1);
+    // выброс открытия: далеко и от закрытия предыдущей, и от своего закрытия, которые между собой близки
+    if (prev && dev(b.o, prev.c) > SPIKE && dev(b.o, b.c) > SPIKE && dev(prev.c, b.c) < SPIKE / 2) b.o = prev.c;
+    // выброс закрытия: то же относительно своего открытия и открытия следующей
+    if (next && dev(b.c, b.o) > SPIKE && dev(b.c, next.o) > SPIKE && dev(next.o, b.o) < SPIKE / 2) b.c = next.o;
+    const top = Math.max(b.o, b.c);
+    const bottom = Math.min(b.o, b.c);
+    b.h = Math.min(b.h, top * (1 + WICK));
+    b.l = Math.max(b.l, bottom * (1 - WICK));
+  }
+  return bars;
 }
 
 /** Сведение сырых свечей в свечи базового интервала (выравнивание по UTC-сетке). */
@@ -82,6 +108,35 @@ function bucket(raw: RawBar[], dt: number, start: number, end: number): Candle[]
     }
   }
   return [...map.values()];
+}
+
+/** С какого момента Yahoo отдаёт свечи этого интервала (раньше — только дневные). */
+export function yahooIntradayFrom(interval: IntervalKey, now = Date.now()): number {
+  const src = SRC[interval] ?? SRC['1d'];
+  return src.limitDays === Infinity ? -Infinity : now - src.limitDays * DAY;
+}
+
+export interface Split {
+  /** начало дня сплита (UTC) */
+  t: number;
+  /** во сколько раз выросло число акций (4:1 → 4) */
+  factor: number;
+}
+
+/** Сплиты за период — для приведения к ним нескорректированных архивов (Dukascopy). */
+export async function fetchSplits(symbol: string, from: number, to: number, signal?: AbortSignal): Promise<Split[]> {
+  const json = await apiGet(
+    PROXY,
+    DIRECT,
+    `/v8/finance/chart/${encodeURIComponent(tickerOf(symbol))}`,
+    { period1: Math.floor(from / 1000), period2: Math.ceil(to / 1000), interval: '1mo', events: 'split' },
+    signal,
+  );
+  const ev = json?.chart?.result?.[0]?.events?.splits ?? {};
+  return Object.values(ev as Record<string, { date: number; numerator: number; denominator: number }>)
+    .map((x) => ({ t: Math.floor((x.date * 1000) / DAY) * DAY, factor: x.numerator / x.denominator }))
+    .filter((x) => Number.isFinite(x.factor) && x.factor > 0 && x.factor !== 1)
+    .sort((a, b) => a.t - b.t);
 }
 
 export const yahooProvider: DataProvider = {

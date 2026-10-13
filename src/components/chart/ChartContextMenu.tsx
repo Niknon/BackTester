@@ -1,16 +1,16 @@
 import { useMemo, useState } from 'react';
-import { getAsset, optionsAvailable, roundToStep, qtyStepFor } from '../../data/assets';
+import { getAsset, optionsAvailable, roundToStep, qtyStepFor, strikeStyle } from '../../data/assets';
 import { MAIN } from '../../engine/exchange';
 import { optionQtyStep, strikeStep, yearsTo } from '../../engine/options';
 import { resolveStrategy, STRATEGIES } from '../../engine/optionStrategies';
 import type { Side } from '../../engine/types';
 import { autoDecimals, exactDecimals, fmtNum, fmtPct, fmtPrice, fmtQty, fmtShortDate, fmtUsd, pnlClass } from '../../lib/format';
 import { openStrategyAction } from '../../store/actions';
-import { bump, toast, useSession, useTick } from '../../store/session';
+import { bump, toast, useSession, useTick, type PreviewLine } from '../../store/session';
 import { cx, NumInput, usePersistent } from '../ui';
 import { dte } from '../options/OptionPositions';
 import { payoffStats, strategyEconomics } from '../options/strategyMath';
-import { ChartOptionMenu } from './ChartOptionMenu';
+import { ChartOptionMenu, ChartPreviewLines } from './ChartOptionMenu';
 
 type CtxTab = 'fut' | 'opt' | 'strat' | 'misc';
 
@@ -237,8 +237,9 @@ function StrategyTab({ symbol, price, onDone }: { symbol: string; price: number;
   const step = optionQtyStep(S);
   const qty = qtyMap[base] ?? Number((step * 10).toPrecision(6));
   // страйки — сетка с шагом экспирации вокруг уровня клика
-  const kStep = expiry ? strikeStep(S, yearsTo(expiry, ex.now)) : 0;
-  const center = kStep ? Math.max(kStep, Number((Math.round(price / kStep) * kStep).toPrecision(10))) : price;
+  const kStep = expiry ? strikeStep(S, yearsTo(expiry, ex.now), strikeStyle(getAsset(symbol))) : 0;
+  const [shift, setShift] = useState(0);
+  const center = kStep ? Math.max(kStep, Number(((Math.round(price / kStep) + shift) * kStep).toPrecision(10))) : price;
   const N = 40;
   const strikes = useMemo(() => Array.from({ length: 2 * N + 1 }, (_, i) => Number((center + (i - N) * kStep).toPrecision(10))).filter((k) => k > 0), [center, kStep]);
   const centerIdx = strikes.indexOf(center);
@@ -248,6 +249,21 @@ function StrategyTab({ symbol, price, onDone }: { symbol: string; price: number;
   const stats = eco ? payoffStats(eco.payoff, S) : null;
   const bound = (v: number) => (v === Infinity ? '∞' : v === -Infinity ? '−∞' : fmtUsd(v, 2, true));
   const d = autoDecimals(S);
+  // предпросмотр на графике: страйки ног и точки безубыточности, пока открыта вкладка
+  const kd = (k: number) => fmtNum(k, exactDecimals(k));
+  const preview: PreviewLine[] = [];
+  const byStrike = new Map<number, string[]>();
+  for (const l of res.legs) {
+    if (l.type === 'F') continue;
+    const name = `${l.side === 'Buy' ? 'Купить' : 'Продать'} ${l.type === 'C' ? 'колл' : 'пут'}${l.qty !== qty ? ` ×${fmtNum(l.qty / qty, 0)}` : ''}${l.expiry !== expiry ? ' (дальн.)' : ''}`;
+    byStrike.set(l.strike, [...(byStrike.get(l.strike) ?? []), name]);
+  }
+  for (const [k, names] of byStrike) {
+    const buys = names.filter((n) => n.startsWith('Купить')).length;
+    const color = buys === names.length ? '#20b26c' : buys === 0 ? '#ef454a' : '#a78bfa';
+    preview.push({ id: `leg${k}`, price: k, color, title: `◇ ${names.join(' + ')} ${kd(k)}`, kind: 'leg' });
+  }
+  for (const [i, b] of (stats?.bes ?? []).entries()) preview.push({ id: `be${i}`, price: b, color: '#f7a600', title: '◇ Безубыточность', kind: 'be' });
   if (!expiries.length) return <div className="px-3 py-3 text-muted">Нет экспираций</div>;
   return (
     <div className="px-2 flex flex-col gap-1.5">
@@ -296,10 +312,22 @@ function StrategyTab({ symbol, price, onDone }: { symbol: string; price: number;
         )}
       </div>
       <NumInput label="Кол-во (×1)" value={qty || ''} onChange={(v) => setQtyMap({ ...qtyMap, [base]: v === '' ? 0 : v })} step={step} suffix={base} className="!h-7" />
-      <div className="text-[10px] text-dim">
-        Центр: страйк {fmtNum(center, exactDecimals(center))} (шаг {fmtNum(kStep, exactDecimals(kStep))})
-        {def.calendar && farExpiry > expiry ? ` · дальняя ${fmtShortDate(farExpiry)}` : ''}
+      <div className="flex items-center gap-1 text-[11px]">
+        <span className="text-muted">Центр</span>
+        <button className="btn btn-ghost !h-6 !px-1.5" onClick={() => setShift(shift - 1)} title={`Сдвинуть все страйки вниз на ${kd(kStep)}`}>
+          −
+        </button>
+        <span className="num font-semibold min-w-[56px] text-center">{kd(center)}</span>
+        <button className="btn btn-ghost !h-6 !px-1.5" onClick={() => setShift(shift + 1)} title={`Сдвинуть все страйки вверх на ${kd(kStep)}`}>
+          +
+        </button>
+        <span className="text-[10px] text-dim ml-auto">
+          шаг {kd(kStep)}
+          {def.calendar && farExpiry > expiry ? ` · дальняя ${fmtShortDate(farExpiry)}` : ''}
+        </span>
       </div>
+      <ChartPreviewLines symbol={symbol} lines={preview} />
+      {preview.length > 0 && <div className="text-[10px] text-dim">◇ Страйки и безубыточность показаны на графике</div>}
       {res.legs.length > 0 && (
         <div className="flex flex-col text-[11px] bg-panel3/40 rounded px-1.5 py-1">
           {res.legs.map((l, i) => (

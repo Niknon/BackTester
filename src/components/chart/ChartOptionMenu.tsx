@@ -1,10 +1,22 @@
-import { getAsset, optionsAvailable } from '../../data/assets';
+import { useEffect, useState } from 'react';
+import { getAsset, optionsAvailable, strikeStyle } from '../../data/assets';
 import { optionQtyStep, optionSymbol, strikeStep, yearsTo } from '../../engine/options';
 import type { Side } from '../../engine/types';
 import { fmtShortDate, fmtNum, exactDecimals } from '../../lib/format';
-import { bump, toast, useSession } from '../../store/session';
+import { bump, toast, useSession, type PreviewLine } from '../../store/session';
 import { cx, NumInput, usePersistent } from '../ui';
 import { dte } from '../options/OptionPositions';
+
+/** Показывает уровни на графике, пока смонтирован (вкладка меню открыта); убирает при закрытии. */
+export function ChartPreviewLines({ symbol, lines }: { symbol: string; lines: PreviewLine[] }) {
+  const sig = JSON.stringify(lines);
+  useEffect(() => {
+    useSession.setState({ chartPreview: lines.length ? { symbol, lines } : null });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sig, symbol]);
+  useEffect(() => () => useSession.setState({ chartPreview: null }), []);
+  return null;
+}
 
 /**
  * Раздел контекстного меню графика: открыть колл/пут по рынку на страйке,
@@ -16,6 +28,8 @@ export function ChartOptionMenu({ symbol, price, onDone }: { symbol: string; pri
   const [expIdx, setExpIdx] = usePersistent<number>('bt-ctx-opt-exp', 3);
   // количество — своё для каждого актива, вводится вручную или кнопками
   const [qtyMap, setQtyMap] = usePersistent<Record<string, number>>('bt-ctx-opt-qty', {});
+  // сдвиг страйка от уровня клика (в шагах страйков)
+  const [shift, setShift] = useState(0);
   if (!optionsAvailable(spec) || !ex.market.has(symbol)) return null;
   const expiries = ex.optionExpiries(spec.base);
   if (!expiries.length) return null;
@@ -25,8 +39,8 @@ export function ChartOptionMenu({ symbol, price, onDone }: { symbol: string; pri
   if (!Number.isFinite(S) || !(price > 0)) return null;
   // страйк — уровень клика, округлённый до шага страйков этой экспирации (не ограничиваемся
   // видимой цепочкой: иначе дальние уровни «прилипали» к краю цепочки или к страйку открытой позиции)
-  const kStep = strikeStep(S, yearsTo(expiry, ex.now));
-  const strike = Math.max(kStep, Number((Math.round(price / kStep) * kStep).toPrecision(10)));
+  const kStep = strikeStep(S, yearsTo(expiry, ex.now), strikeStyle(getAsset(symbol)));
+  const strike = Math.max(kStep, Number(((Math.round(price / kStep) + shift) * kStep).toPrecision(10)));
   const call = ex.optionQuote(optionSymbol(spec.base, expiry, strike, 'C'));
   const put = ex.optionQuote(optionSymbol(spec.base, expiry, strike, 'P'));
   if (!call || !put) return null;
@@ -65,11 +79,31 @@ export function ChartOptionMenu({ symbol, price, onDone }: { symbol: string; pri
     );
   };
 
+  // предпросмотр: страйк и безубыточность покупки колла / пута
+  const preview: PreviewLine[] = [
+    { id: 'k', price: row.strike, color: '#a78bfa', title: `◇ Страйк ${fmtNum(row.strike, kd)}`, kind: 'leg' },
+    ...(row.call.ask > 0 ? [{ id: 'bec', price: row.strike + row.call.ask, color: '#20b26c', title: '◇ БУ покупки колла', kind: 'be' as const }] : []),
+    ...(row.put.ask > 0 && row.strike - row.put.ask > 0 ? [{ id: 'bep', price: row.strike - row.put.ask, color: '#ef454a', title: '◇ БУ покупки пута', kind: 'be' as const }] : []),
+  ];
+
   return (
     <div className="pt-1 px-2 pb-1 flex flex-col gap-1.5">
-      <div className="text-[10px] text-muted px-1">
-        Опцион по рынку · страйк <span className="text-text num font-semibold">{fmtNum(row.strike, kd)}</span>
-        {Math.abs(row.strike - price) / price > 0.001 && <span> (уровень округлён до шага страйков {fmtNum(kStep, exactDecimals(kStep))})</span>}
+      <ChartPreviewLines symbol={symbol} lines={preview} />
+      <div className="flex items-center gap-1 text-[11px]">
+        <span className="text-muted">Страйк</span>
+        <button className="btn btn-ghost !h-6 !px-1.5" onClick={() => setShift(shift - 1)} title={`Страйк ниже на ${fmtNum(kStep, exactDecimals(kStep))}`}>
+          −
+        </button>
+        <span className="num font-semibold min-w-[56px] text-center">{fmtNum(row.strike, kd)}</span>
+        <button className="btn btn-ghost !h-6 !px-1.5" onClick={() => setShift(shift + 1)} title={`Страйк выше на ${fmtNum(kStep, exactDecimals(kStep))}`}>
+          +
+        </button>
+        <span className="text-[10px] text-dim ml-auto" title="Страйки идут с шагом, зависящим от срока экспирации (как на бирже); уровень клика округляется до ближайшего">
+          шаг {fmtNum(kStep, exactDecimals(kStep))}
+        </span>
+      </div>
+      <div className="text-[10px] text-muted px-1 num">
+        Колл: марк {fmtNum(row.call.mark, 2)} · IV {fmtNum(row.call.iv * 100, 1)}% · Пут: марк {fmtNum(row.put.mark, 2)} · IV {fmtNum(row.put.iv * 100, 1)}%
       </div>
       <div className="flex gap-1">
         <select className="field !h-7 flex-1 text-[11px]" value={idx} onChange={(e) => setExpIdx(Number(e.target.value))}>

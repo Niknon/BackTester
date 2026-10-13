@@ -3,6 +3,7 @@ import { useSession } from './store/session';
 import { TopNav } from './components/TopNav';
 import { ReplayBar } from './components/ReplayBar';
 import { Toasts } from './components/Toasts';
+import { NewsWatcher } from './components/news/NewsWatcher';
 import { LoadingOverlay } from './components/LoadingOverlay';
 import { SetupPage } from './pages/SetupPage';
 import { TradePage } from './pages/TradePage';
@@ -80,6 +81,7 @@ export function App() {
       <PositionsDrawer />
       <LoadingOverlay />
       <Toasts />
+      <NewsWatcher />
     </div>
   );
 }

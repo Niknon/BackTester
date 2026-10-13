@@ -18,6 +18,7 @@ export function NumInput({
   className,
   disabled,
   autoFocus,
+  title,
 }: {
   value: number | '' | null | undefined;
   onChange: (v: number | '') => void;
@@ -30,6 +31,7 @@ export function NumInput({
   className?: string;
   disabled?: boolean;
   autoFocus?: boolean;
+  title?: string;
 }) {
   const [text, setText] = useState(value === '' || value === null || value === undefined ? '' : String(value));
   const focused = useRef(false);
@@ -38,7 +40,7 @@ export function NumInput({
     setText(value === '' || value === null || value === undefined || !Number.isFinite(value) ? '' : String(Number(Number(value).toPrecision(12))));
   }, [value]);
   return (
-    <label className={cx('field', disabled && 'opacity-50', className)}>
+    <label className={cx('field', disabled && 'opacity-50', className)} title={title}>
       {label !== undefined && <span className="lbl">{label}</span>}
       <input
         type="text"

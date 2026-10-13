@@ -69,6 +69,46 @@ export async function apiGet(
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
 
+/**
+ * GET двоичного файла с повторами (история Dukascopy). null — файла нет (404).
+ * 503/429 (сервер ограничивает частоту) — пауза с нарастанием и повтор.
+ */
+export async function apiGetBinary(proxyPrefix: string, directBase: string, path: string, signal?: AbortSignal, retries = 7): Promise<Uint8Array | null> {
+  const isBrowser = typeof window !== 'undefined' && typeof location !== 'undefined';
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+    const useProxy = isBrowser && proxyAvailable[proxyPrefix] !== false;
+    const url = useProxy ? `${proxyPrefix}${path}` : `${directBase}${path}`;
+    // зависший запрос не должен блокировать загрузку: свой таймаут на попытку
+    const ctl = new AbortController();
+    const onAbort = () => ctl.abort();
+    signal?.addEventListener('abort', onAbort);
+    const timer = setTimeout(() => ctl.abort(), 30_000);
+    try {
+      const res = await fetch(url, { signal: ctl.signal });
+      if (res.status === 404) return null;
+      if (!res.ok) throw new HttpError(`HTTP ${res.status}`, res.status);
+      // без прокси (статический хостинг) вместо файла приходит index.html — переключаемся на прямые запросы
+      if (useProxy && /text\/html/.test(res.headers.get('content-type') ?? '')) {
+        proxyAvailable[proxyPrefix] = false;
+        continue;
+      }
+      if (useProxy) proxyAvailable[proxyPrefix] = true;
+      return new Uint8Array(await res.arrayBuffer());
+    } catch (e: any) {
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+      lastErr = e?.name === 'AbortError' ? new Error('таймаут запроса') : e;
+      if (e instanceof HttpError && e.status === 403) throw e;
+      await sleep(Math.min(15000, 1000 * 2 ** attempt));
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+}
+
 /** Параллельное выполнение задач с ограничением конкуренции. */
 export async function pool<T, R>(
   items: T[],
