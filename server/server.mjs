@@ -27,6 +27,13 @@ const MIME = {
 function proxy(req, res, prefix, value) {
   const { target, headers } = proxyTarget(value);
   const url = new URL(req.url.slice(prefix.length) || '/', target);
+  // ошибка источника: если ответ ещё не начат — 502, иначе просто обрываем его
+  // (повторная отправка заголовков роняла весь сервер: ERR_HTTP_HEADERS_SENT)
+  const fail = (e) => {
+    if (res.headersSent) return res.destroy();
+    res.writeHead(502, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });
+    res.end(JSON.stringify({ error: String(e?.message || e) }));
+  };
   const upstream = https.request(
     url,
     {
@@ -39,12 +46,16 @@ function proxy(req, res, prefix, value) {
         'content-type': up.headers['content-type'] || 'application/json',
         'access-control-allow-origin': '*',
       });
+      up.on('error', fail);
       up.pipe(res);
     },
   );
-  upstream.on('error', (e) => {
-    res.writeHead(502, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ error: String(e.message || e) }));
+  upstream.on('error', fail);
+  // источник завис — не держим соединение бесконечно
+  upstream.setTimeout(60_000, () => upstream.destroy(new Error('таймаут источника')));
+  // браузер отменил запрос (смена страницы, свой таймаут) — отменяем и запрос к источнику
+  res.on('close', () => {
+    if (!res.writableFinished) upstream.destroy();
   });
   upstream.end();
 }
@@ -75,3 +86,6 @@ http
     serveStatic(req, res);
   })
   .listen(PORT, () => console.log(`BackTester: http://localhost:${PORT}`));
+
+// страховка: сбой одного сетевого запроса не должен закрывать программу
+process.on('uncaughtException', (e) => console.error('Ошибка (сервер продолжает работу):', e?.message || e));
