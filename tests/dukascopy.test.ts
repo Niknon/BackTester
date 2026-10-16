@@ -126,3 +126,34 @@ describe('Склейка Yahoo + Dukascopy', () => {
     }
   });
 });
+
+describe('Загрузка акций без лишних запросов к архиву', () => {
+  it('сессия 5м на 30 дней + история до старта: только Yahoo, без Dukascopy (разница в 1 день)', async () => {
+    const { vi } = await import('vitest');
+    const { loadSeries } = await import('../src/data/loader');
+    const DAY = 86400000;
+    const step: Record<string, number> = { '1d': DAY, '5m': 300_000 };
+    const urls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        urls.push(url);
+        const q = new URL(url).searchParams;
+        const dt = step[q.get('interval') ?? '1d'] ?? DAY;
+        const ts: number[] = [];
+        for (let t = Number(q.get('period1')) * 1000; t < Number(q.get('period2')) * 1000; t += dt) ts.push(t / 1000);
+        const px = ts.map(() => 100);
+        return new Response(JSON.stringify({ chart: { result: [{ timestamp: ts, indicators: { quote: [{ open: px, high: px, low: px, close: px, volume: px }] } }] } }), { status: 200 });
+      }),
+    );
+    try {
+      const end = Math.floor(Date.now() / DAY) * DAY;
+      const r = await loadSeries({ provider: 'yahoo', symbol: 'AAPLUSDT', interval: '5m', start: end - 60 * DAY, end, fallback: true });
+      expect(r.provider).toBe('yahoo');
+      expect(r.series.length).toBeGreaterThan(1000);
+      expect(urls.some((u) => u.includes('dukascopy'))).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});

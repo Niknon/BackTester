@@ -73,7 +73,7 @@ export async function apiGet(
  * GET двоичного файла с повторами (история Dukascopy). null — файла нет (404).
  * 503/429 (сервер ограничивает частоту) — пауза с нарастанием и повтор.
  */
-export async function apiGetBinary(proxyPrefix: string, directBase: string, path: string, signal?: AbortSignal, retries = 7): Promise<Uint8Array | null> {
+export async function apiGetBinary(proxyPrefix: string, directBase: string, path: string, signal?: AbortSignal, retries = 2, timeoutMs = 20_000): Promise<Uint8Array | null> {
   const isBrowser = typeof window !== 'undefined' && typeof location !== 'undefined';
   let lastErr: unknown;
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -84,7 +84,7 @@ export async function apiGetBinary(proxyPrefix: string, directBase: string, path
     const ctl = new AbortController();
     const onAbort = () => ctl.abort();
     signal?.addEventListener('abort', onAbort);
-    const timer = setTimeout(() => ctl.abort(), 30_000);
+    const timer = setTimeout(() => ctl.abort(), timeoutMs);
     try {
       const res = await fetch(url, { signal: ctl.signal });
       if (res.status === 404) return null;
@@ -100,7 +100,7 @@ export async function apiGetBinary(proxyPrefix: string, directBase: string, path
       if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
       lastErr = e?.name === 'AbortError' ? new Error('таймаут запроса') : e;
       if (e instanceof HttpError && e.status === 403) throw e;
-      await sleep(Math.min(15000, 1000 * 2 ** attempt));
+      if (attempt < retries) await sleep(Math.min(8000, 1000 * 2 ** attempt));
     } finally {
       clearTimeout(timer);
       signal?.removeEventListener('abort', onAbort);

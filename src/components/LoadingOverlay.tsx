@@ -1,5 +1,6 @@
 import { useSession } from '../store/session';
 import { cancelLoading } from '../store/actions';
+import { skipDukascopy } from '../data/providers/dukascopy';
 import { ProgressBar, Spinner } from './ui';
 
 export function LoadingOverlay() {
@@ -20,7 +21,16 @@ export function LoadingOverlay() {
             {p.errors.slice(-6).join('\n')}
           </div>
         )}
-        <div className="flex justify-end">
+        <div className="flex justify-end gap-2">
+          {!failed && /Dukascopy/.test(p.message) && (
+            <button
+              className="btn"
+              onClick={skipDukascopy}
+              title="Архив Dukascopy ограничивает частоту запросов и может отвечать медленно. Для старых периодов будут использованы дневные свечи Yahoo; уже скачанное сохранится в кэше"
+            >
+              Пропустить Dukascopy
+            </button>
+          )}
           <button className="btn btn-ghost" onClick={cancelLoading}>
             {failed ? 'Закрыть' : 'Отмена'}
           </button>

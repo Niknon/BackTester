@@ -111,6 +111,23 @@ function bucket(rows: Candle[], dt: number, start: number, end: number): Candle[
   return out;
 }
 
+/** Подряд не загрузившиеся файлы и пауза, на которую прекращаем запросы к перегруженному серверу. */
+let failStreak = 0;
+let downUntil = 0;
+let skipCtl = new AbortController();
+
+/** Dukascopy сейчас недоступен (ограничение частоты) или загрузку с него пропустили. */
+export function dukascopyDown() {
+  return Date.now() < downUntil;
+}
+
+/** Пропустить загрузку с Dukascopy (кнопка на экране загрузки): дальше — свечи основного источника. */
+export function skipDukascopy() {
+  downUntil = Date.now() + 30 * 60_000;
+  skipCtl.abort();
+  skipCtl = new AbortController();
+}
+
 interface FileJob {
   path: string;
   base: number;
@@ -147,20 +164,30 @@ export const dukascopyProvider: DataProvider = {
     } else dayJobs(from, to);
     let done = 0;
     let failed = 0;
+    if (jobs.length) opts.onProgress?.(0, jobs.length); // сразу показываем, что идёт загрузка с Dukascopy
     const parts = await pool(
       jobs,
       2,
       async (j) => {
         let rows: Candle[] = [];
-        try {
-          const buf = await apiGetBinary(PROXY, DIRECT, j.path, opts.signal);
-          rows = buf ? parseBi5(buf, j.base, inst.scale) : [];
-        } catch (e: any) {
-          if (e?.name === 'AbortError') throw e;
-          if (e?.status === 403) throw e;
-          failed++; // сервер ограничивает частоту — пропуск заполнится из основного источника
+        if (dukascopyDown()) failed++; // сервер не отвечает или загрузку пропустили — дальше не ждём
+        else {
+          // отдельная отмена: «Пропустить Dukascopy» прерывает только эти запросы, а не всю загрузку
+          const skip = skipCtl.signal;
+          const signal = opts.signal ? AbortSignal.any([opts.signal, skip]) : skip;
+          try {
+            const buf = await apiGetBinary(PROXY, DIRECT, j.path, signal);
+            rows = buf ? parseBi5(buf, j.base, inst.scale) : [];
+            failStreak = 0;
+          } catch (e: any) {
+            if (opts.signal?.aborted) throw e;
+            if (e?.status === 403) throw e;
+            failed++; // сервер ограничивает частоту — пропуск заполнится из основного источника
+            // несколько файлов подряд не загрузились — сервер перегружен, на время прекращаем попытки
+            if (++failStreak >= 3) downUntil = Date.now() + 10 * 60_000;
+          }
+          await sleep(250); // Dukascopy ограничивает частоту запросов
         }
-        await sleep(250); // Dukascopy ограничивает частоту запросов
         opts.onProgress?.(++done, jobs.length);
         return rows;
       },

@@ -1,4 +1,4 @@
-import { apiGet } from './http';
+import { apiGet, sleep } from './http';
 import { DAY } from './intervals';
 import { idbGet, idbSet } from './cache';
 import { getAsset } from './assets';
@@ -142,31 +142,50 @@ const tvToEvent = (e: TvEvent): NewsEvent => ({
   announceMs: 60 * DAY,
 });
 
-/** Экономический календарь за период — помесячно, с кэшем завершённых месяцев. */
-export async function fetchMacro(from: number, to: number, countries: string[], minImportance: 0 | 1, signal?: AbortSignal): Promise<NewsEvent[]> {
-  if (!countries.length) return [];
-  const out: NewsEvent[] = [];
+/**
+ * Экономический календарь за период — поквартально (до 2000 событий за запрос), с паузой между
+ * запросами (источник ограничивает частоту) и кэшем завершённых кварталов. Если какой-то квартал
+ * не загрузился, остальные всё равно показываются (failed — число пропущенных кварталов).
+ */
+export async function fetchMacro(from: number, to: number, countries: string[], minImportance: 0 | 1, signal?: AbortSignal): Promise<NewsEvent[] & { failed?: number }> {
+  const out: NewsEvent[] & { failed?: number } = [];
+  if (!countries.length) return out;
   const cs = [...countries].sort().join(',');
   const d0 = new Date(from);
-  for (let y = d0.getUTCFullYear(), m = d0.getUTCMonth(); Date.UTC(y, m, 1) < to; m === 11 ? (y++, (m = 0)) : m++) {
+  let failed = 0;
+  let lastErr: unknown = null;
+  let requested = false;
+  for (let y = d0.getUTCFullYear(), m = Math.floor(d0.getUTCMonth() / 3) * 3; Date.UTC(y, m, 1) < to; m === 9 ? (y++, (m = 0)) : (m += 3)) {
     const a = Date.UTC(y, m, 1);
-    const b = Date.UTC(y, m + 1, 1);
-    const key = `news|macro|${cs}|${minImportance}|${a}`;
+    const b = Date.UTC(y, m + 3, 1);
+    const key = `news|macroq|${cs}|${minImportance}|${a}`;
     let rows = await idbGet<NewsEvent[]>('meta', key);
     if (!rows) {
-      const json = await apiGet(
-        '/proxy/tvcal',
-        'https://economic-calendar.tradingview.com',
-        '/events',
-        { from: new Date(a).toISOString(), to: new Date(b).toISOString(), countries: cs, minImportance: minImportance === 1 ? 1 : 0 },
-        signal,
-      );
-      rows = ((json?.result ?? []) as TvEvent[]).filter((e) => Number.isFinite(Date.parse(e.date))).map(tvToEvent);
-      // прошедший месяц не изменится — кэшируем (у будущих событий ещё появятся факты)
-      if (b < Date.now() - 2 * DAY) await idbSet('meta', key, rows);
+      if (requested) await sleep(400);
+      requested = true;
+      try {
+        const json = await apiGet(
+          '/proxy/tvcal',
+          'https://economic-calendar.tradingview.com',
+          '/events',
+          { from: new Date(a).toISOString(), to: new Date(b).toISOString(), countries: cs, minImportance: minImportance === 1 ? 1 : 0 },
+          signal,
+          2,
+        );
+        rows = ((json?.result ?? []) as TvEvent[]).filter((e) => Number.isFinite(Date.parse(e.date))).map(tvToEvent);
+        // прошедший квартал не изменится — кэшируем (у будущих событий ещё появятся факты)
+        if (b < Date.now() - 2 * DAY) await idbSet('meta', key, rows);
+      } catch (e: any) {
+        if (e?.name === 'AbortError') throw e;
+        failed++;
+        lastErr = e;
+        continue;
+      }
     }
     out.push(...rows);
   }
+  if (failed && !out.length) throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+  if (failed) out.failed = failed;
   return out;
 }
 

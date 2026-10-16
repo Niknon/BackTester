@@ -44,10 +44,15 @@ export async function ensureNews(symbols: string[], from: number, to: number, p:
   const tasks: Promise<NewsEvent[]>[] = [];
   if (p.macro && p.countries.length)
     tasks.push(
-      fetchMacro(from, to, p.countries, p.minImportance, my.signal).catch((e) => {
-        if (e?.name !== 'AbortError') errors.push(`экономический календарь: ${String(e?.message || e).slice(0, 80)}`);
-        return [];
-      }),
+      fetchMacro(from, to, p.countries, p.minImportance, my.signal)
+        .then((r) => {
+          if (r.failed) errors.push(`экономический календарь: ${r.failed} кв. не загрузились (источник ограничивает частоту запросов) — откройте сессию позже, загруженное сохранено`);
+          return r;
+        })
+        .catch((e) => {
+          if (e?.name !== 'AbortError') errors.push(`экономический календарь: ${String(e?.message || e).slice(0, 80)}`);
+          return [];
+        }),
     );
   if (p.corporate)
     for (const s of stocks)

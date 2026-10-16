@@ -8,7 +8,7 @@ import { okxProvider } from './providers/okx';
 import { binanceProvider } from './providers/binance';
 import { syntheticProvider } from './providers/synthetic';
 import { fetchSplits, yahooIntradayFrom, yahooProvider } from './providers/yahoo';
-import { dukaInstrument, dukascopyProvider } from './providers/dukascopy';
+import { dukaInstrument, dukascopyDown, dukascopyProvider } from './providers/dukascopy';
 import { getAsset } from './assets';
 import { DAY } from './intervals';
 
@@ -188,8 +188,14 @@ async function withIntradayHistory(o: LoadOptions, best: { series: SeriesData; p
   const inst = dukaInstrument(o.symbol);
   if (!inst || dt >= DAY || blocked.has('dukascopy')) return null;
   const coarseUntil = best.provider === 'yahoo' ? yahooIntradayFrom(o.interval) : best.cov < 0.97 ? o.end : -Infinity;
-  if (o.provider !== 'dukascopy' && !(o.start < coarseUntil)) return null; // основной источник уже детальный
   const from = Math.max(o.start, inst.start);
+  // основной источник уже детальный или грубых свечей всего несколько дней (обычно часть истории до старта) —
+  // архив не нужен: дневные свечи там не мешают, а запросы к Dukascopy медленные
+  if (o.provider !== 'dukascopy' && Math.min(o.end, coarseUntil) - from < 7 * DAY) return null;
+  if (dukascopyDown()) {
+    errors.push(`Dukascopy сейчас не отвечает или пропущен — для ${o.symbol} до ${fmtDay(Math.min(o.end, coarseUntil))} используются дневные свечи ${PROVIDERS[best.provider].label}`);
+    return null;
+  }
   // акции: архив — только там, где основной источник грубый (цены те же, стык незаметен);
   // индексы/сырьё — весь период из архива: CFD отличается от фьючерса Yahoo на базис
   const to = inst.cfd || o.provider === 'dukascopy' ? o.end : Math.min(o.end, coarseUntil);
