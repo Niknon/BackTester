@@ -24,7 +24,8 @@ async function fetchJson(url: string, signal?: AbortSignal): Promise<any> {
   const text = await res.text();
   if (!res.ok) throw new HttpError(`HTTP ${res.status}: ${text.slice(0, 200)}`, res.status);
   try {
-    return JSON.parse(text);
+    // часть API (MOEX ISS) начинает ответ с BOM
+    return JSON.parse(text.replace(/^\uFEFF/, ''));
   } catch {
     throw new HttpError(`Некорректный ответ: ${text.slice(0, 120)}`, res.status);
   }

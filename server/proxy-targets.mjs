@@ -4,6 +4,8 @@ export const PROXY_TARGETS = {
   '/proxy/bybit': 'https://api.bybit.com',
   '/proxy/okx': 'https://www.okx.com',
   '/proxy/binance-fapi': 'https://fapi.binance.com',
+  '/proxy/binance-spot': 'https://api.binance.com',
+  '/proxy/moex': 'https://iss.moex.com',
   '/proxy/deribit': 'https://www.deribit.com',
   '/proxy/yahoo': 'https://query1.finance.yahoo.com',
   '/proxy/dukascopy': 'https://datafeed.dukascopy.com',

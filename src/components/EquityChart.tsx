@@ -23,6 +23,8 @@ interface Props {
   height?: number | string;
   /** дополнительные линии (плоты стратегии и т.п.) */
   extra?: { name: string; color: string; points: EquitySample[] }[];
+  /** доступ к графику (скриншот для отчёта) */
+  onChart?: (c: IChartApi | null) => void;
 }
 
 const toT = (ms: number) => Math.floor(ms / 1000) as UTCTimestamp;
@@ -38,7 +40,7 @@ function dedupe(points: EquitySample[]) {
   return out;
 }
 
-export function EquityChart({ equity, bench, benchLabel = 'Бенчмарк (buy&hold)', showDrawdown = true, height = 300, extra }: Props) {
+export function EquityChart({ equity, bench, benchLabel = 'Бенчмарк (buy&hold)', showDrawdown = true, height = 300, extra, onChart }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const chart = useRef<IChartApi | null>(null);
   const eq = useRef<ISeriesApi<'Area'> | null>(null);
@@ -58,7 +60,8 @@ export function EquityChart({ equity, bench, benchLabel = 'Бенчмарк (buy
       },
       grid: { vertLines: { color: '#1b1d23' }, horzLines: { color: '#1b1d23' } },
       rightPriceScale: { borderColor: '#262930' },
-      timeScale: { borderColor: '#262930', timeVisible: true },
+      // минимальный шаг баров меньше пикселя — чтобы fitContent вмещал годы дневной истории
+      timeScale: { borderColor: '#262930', timeVisible: true, minBarSpacing: 0.05 },
       localization: { locale: 'ru-RU', priceFormatter: (p: number) => fmtNum(p, 2) },
     });
     eq.current = c.addSeries(AreaSeries, {
@@ -80,7 +83,9 @@ export function EquityChart({ equity, bench, benchLabel = 'Бенчмарк (buy
       c.panes()[1]?.setStretchFactor(0.3);
     }
     chart.current = c;
+    onChart?.(c);
     return () => {
+      onChart?.(null);
       c.remove();
       chart.current = null;
       ex.current = [];

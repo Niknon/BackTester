@@ -7,7 +7,8 @@ import type { IntervalKey } from '../data/types';
 import { STRATEGY_TEMPLATES, compileStrategy, expandGrid, optimizeStrategy, runStrategy, type OptimizeRange, type OptimizeRow, type StrategyResult } from '../engine/strategy';
 import { toast, useSession } from '../store/session';
 import { downloadText, fmtNum, fmtPct, fmtPrice, fmtQty, fmtTime, fmtUsd, pnlClass, toCsv } from '../lib/format';
-import { Badge, cx, Empty, NumInput, ProgressBar, Select, Tabs } from '../components/ui';
+import { Badge, cx, Empty, NumInput, ProgressBar, Select, Tabs, usePersistent } from '../components/ui';
+import { LeadersBreakoutPanel } from '../components/lab/LeadersBreakout';
 import { ReportGrid } from '../components/ReportGrid';
 import { EquityChart } from '../components/EquityChart';
 import { StrategyChart } from '../components/lab/StrategyChart';
@@ -61,7 +62,25 @@ function loadSaved(): Record<string, string> {
   }
 }
 
+/** Стратегии: скрипт на одном инструменте (редактор кода) или портфельная стратегия «Пробой лидеров». */
 export function StrategyLabPage() {
+  const [mode, setMode] = usePersistent<'script' | 'leaders'>('bt-lab-mode', 'script', ['script', 'leaders']);
+  return (
+    <div className="h-full flex flex-col gap-1 p-1">
+      <div className="flex items-center gap-1 px-1">
+        <button className={cx('chip border border-line2', mode === 'script' && 'active')} onClick={() => setMode('script')}>
+          Скрипт (JavaScript, один инструмент)
+        </button>
+        <button className={cx('chip border border-line2', mode === 'leaders' && 'active')} onClick={() => setMode('leaders')}>
+          Портфельная: «Пробой лидеров»
+        </button>
+      </div>
+      {mode === 'script' ? <ScriptLab /> : <LeadersBreakoutPanel />}
+    </div>
+  );
+}
+
+function ScriptLab() {
   const ex = useSession((s) => s.ex)!;
   const [code, setCode] = useState(() => localStorage.getItem(CODE_KEY) || STRATEGY_TEMPLATES[0].code);
   const [symbol, setSymbol] = useState(ex.config.symbols[0]);
@@ -161,7 +180,7 @@ export function StrategyLabPage() {
   }, [optRows, metric]);
 
   return (
-    <div className="h-full flex flex-col gap-1 p-1">
+    <div className="flex-1 min-h-0 flex flex-col gap-1">
       <div className="flex-1 min-h-0 flex gap-1">
         <div className="flex-1 min-w-0 bg-panel rounded-lg flex flex-col overflow-hidden">
           <div className="flex items-center gap-2 px-3 h-10 border-b border-line shrink-0">
