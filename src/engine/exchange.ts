@@ -1,6 +1,6 @@
 import { getAsset, maintenanceMarginRate, optionClockOf, qtyStepFor, roundToStep, strikeStyle } from '../data/assets';
 import { HOUR } from '../data/intervals';
-import { dvolAt, realizedVolAt } from '../data/volatility';
+import { dvolAt, pendingEvents, realizedVolAt } from '../data/volatility';
 import type { MarketData } from './market';
 import {
   intrinsicValue,
@@ -15,7 +15,9 @@ import {
   quoteOption,
   shortOptionMargin,
   atmIv,
+  eventVariance,
   optionYears,
+  withEvents,
   type OptionQuote,
   type VolInputs,
 } from './options';
@@ -281,7 +283,23 @@ export class Exchange {
     const rv = realizedVolAt(this.market.rv.get(underlying), now);
     const base = underlying.replace(/USDT$/, '');
     const dvol = dvolAt(this.market.dvol.get(base), now);
-    return { rv7: rv?.rv7 ?? null, rv30: rv?.rv30 ?? null, dvol };
+    return { rv7: rv?.rv7 ?? null, rv30: rv?.rv30 ?? null, dvol, events: pendingEvents(this.market.events.get(underlying), now) };
+  }
+
+  /** ATM IV экспирации с учётом отчётов, которые она захватывает (на момент at). */
+  atmIvFor(underlying: string, expiry: number, at = this.state.now, vol = this.volInputs(underlying, at)): number {
+    const settle = this.settleTime(expiry);
+    const T = optionYears(settle, at, optionClockOf(underlying), this.market.hourProfile.get(underlying) ?? null);
+    return withEvents(atmIv(this.config.options, vol, T), T, eventVariance(this.config.options, vol, at, settle));
+  }
+
+  /** Ближайший отчёт впереди: выход отчёта (at), реакция цены (t) и заложенное в опционы движение (σ скачка, доли). */
+  nextReport(underlying: string, now = this.state.now): { t: number; at: number; move: number } | null {
+    const vol = this.volInputs(underlying, now);
+    const e = vol.events?.[0];
+    if (!e) return null;
+    const v = eventVariance(this.config.options, { ...vol, events: [e] }, now, e.t);
+    return { t: e.t, at: e.at ?? e.t, move: Math.sqrt(v) };
   }
 
   optionQuote(symbol: string, S?: number): OptionQuote | null {
@@ -316,7 +334,7 @@ export class Exchange {
     if (!Number.isFinite(S)) return { S, rows: [] as { strike: number; call: OptionQuote; put: OptionQuote }[], atm: 0 };
     const T = this.optionT(underlying, expiry);
     const vol = this.volInputs(underlying);
-    const atm = atmIv(this.config.options, vol, T);
+    const atm = this.atmIvFor(underlying, expiry, this.state.now, vol);
     const strikes = listStrikes(S, T, atm, strikeStyle(getAsset(underlying)));
     // страйки открытых позиций и ордеров тоже показываем
     const used = [

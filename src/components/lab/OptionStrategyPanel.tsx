@@ -485,7 +485,10 @@ export function OptionStrategyPanel() {
             title="Размер позиции"
             open={!!sections.size}
             onToggle={toggleSection}
-            note={s.sizeMode === 'risk' ? `риск ${s.riskPct}%` : s.sizeMode === 'notional' ? `номинал ${s.notionalPct}%` : s.sizeMode === 'margin' ? `маржа ${s.marginPct}%` : `${s.qty} ${spec.base}`}
+            note={
+              (s.sizeMode === 'risk' ? `риск ${s.riskPct}%` : s.sizeMode === 'notional' ? `номинал ${s.notionalPct}%` : s.sizeMode === 'margin' ? `маржа ${s.marginPct}%` : `${s.qty} ${spec.base}`) +
+              (s.useCap ? ` · ≤ ${fmtNum(s.capUsd, 0)}` : '')
+            }
           >
             <Segmented
               size="sm"
@@ -509,6 +512,11 @@ export function OptionStrategyPanel() {
             )}
             {s.sizeMode === 'qty' && <NumInput label="Контрактов на ногу" value={s.qty} onChange={(x) => set('qty', x === '' ? 0 : x)} suffix={spec.base} />}
             {unlimitedRisk(st) && s.sizeMode === 'risk' && <div className="text-[11px] text-down">Риск конструкции не ограничен — выберите другой способ.</div>}
+            <Check checked={s.useCap} onChange={(x) => set('useCap', x)}>
+              <span className="text-[12px]">Потолок на конструкцию</span>
+              <Help text="Сколько максимум средств (премия покупок + маржа продаж) может занять одна конструкция. Ликвидность реального рынка конечна: крупный объём не купить по цене модели. Без потолка размер растёт вместе со счётом и сложный процент уходит в нереальные суммы." />
+            </Check>
+            {s.useCap && <NumInput label="Не больше" value={s.capUsd} onChange={(x) => set('capUsd', x === '' ? 0 : x)} suffix="USDT" />}
           </Section>
 
           <Section
@@ -607,7 +615,7 @@ export function OptionStrategyPanel() {
           </Check>
           {running && <ProgressBar value={progress} />}
           <div className="text-[10px] text-dim leading-snug">
-            Период сессии {fmtTime(ex.market.start)} → {fmtTime(ex.market.end)}, свечи {ex.config.baseInterval}. Цены опционов — модель сессии (IV из реализованной волатильности/DVOL, улыбка, спред), комиссии и маржа как на Bybit.
+            Период сессии {fmtTime(ex.market.start)} → {fmtTime(ex.market.end)}, свечи {ex.config.baseInterval}. Цены опционов — модель сессии (IV из реализованной волатильности/DVOL, улыбка, спред; у акций — надбавка за скачок на отчётах компании по датам из SEC), комиссии и маржа как на Bybit.
           </div>
         </div>
       </aside>
@@ -734,6 +742,11 @@ function OverviewTab({ r }: { r: OsResult }) {
   return (
     <div className="p-2 flex flex-col gap-2">
       {r.halted && <div className="bg-down/10 text-down rounded px-3 py-2 text-[12px]">⚠ {r.halted}</div>}
+      {r.dataWarnings?.map((w) => (
+        <div key={w} className="bg-down/10 text-down rounded px-3 py-2 text-[12px]">
+          ⚠ {w}
+        </div>
+      ))}
       {r.trades.length === 0 && <div className="bg-panel2 text-muted rounded px-3 py-2 text-[12px]">Ни одной сделки — проверьте расписание, фильтры и размер позиции (причины пропусков ниже и в журнале).</div>}
       <div className="grid grid-cols-[repeat(auto-fill,minmax(130px,1fr))] gap-1.5">
         <Kpi label="Доходность" value={fmtPct(rep.totalReturn)} cls={pnlClass(rep.totalReturn)} sub={rep.benchReturn !== null ? `${r.settings.underlyings.length > 1 ? 'корзина' : 'актив'}: ${fmtPct(rep.benchReturn)}` : undefined} />
@@ -748,7 +761,11 @@ function OverviewTab({ r }: { r: OsResult }) {
         {r.settings.hedge && <Kpi label="Хедж перпетуалом" value={fmtUsd(stt.hedge.pnl, 0, true)} cls={pnlClass(stt.hedge.pnl)} sub={`${stt.hedge.trades} сделок, funding ${fmtUsd(stt.hedge.funding, 0, true)}`} />}
         {stt.expiredItm > 0 && <Kpi label="Экспирации в деньгах" value={stt.expiredItm} sub="проданный опцион с выплатой" />}
         {stt.failedEntries.n > 0 && <Kpi label="Откаты входов" value={fmtUsd(stt.failedEntries.cost, 0, true)} cls={pnlClass(stt.failedEntries.cost)} sub={`${stt.failedEntries.n} раз биржа отклонила ногу`} />}
-        {Math.abs(stt.other) >= 1 && <Kpi label="Прочее" value={fmtUsd(stt.other, 0, true)} cls={pnlClass(stt.other)} sub="funding перпетуальных ног и т. п." />}
+        {stt.reports?.trades > 0 && (
+          <Kpi label="Через отчёты" value={fmtUsd(stt.reports.pnl, 0, true)} cls={pnlClass(stt.reports.pnl)} sub={`${stt.reports.trades} констр. застали отчёт, прибыльных ${stt.reports.wins}`} />
+        )}
+        {stt.capped > 0 && <Kpi label="Упёрлись в потолок" value={stt.capped} sub={`входов урезано до ${fmtUsd(r.settings.capUsd, 0)} USDT`} />}
+        {Math.abs(stt.other) >= Math.max(1, 1e-6 * Math.max(r.settings.initialBalance, Math.abs(rep.pnl))) && <Kpi label="Прочее" value={fmtUsd(stt.other, 0, true)} cls={pnlClass(stt.other)} sub="funding перпетуальных ног и т. п." />}
       </div>
       <div className="h-[300px] shrink-0">
         <EquityChart equity={r.equity} bench={r.bench} benchLabel={r.benchLabel} height={300} />

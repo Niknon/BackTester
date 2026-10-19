@@ -40,7 +40,12 @@ export interface RawBar {
   v: number;
 }
 
-async function chart(ticker: string, yi: string, from: number, to: number, signal?: AbortSignal): Promise<RawBar[]> {
+/**
+ * Свечи Yahoo за окно [from, to). Дневные Yahoo отдаёт с поправкой на все сплиты, а внутридневные — только на
+ * сплиты не позже дня конца окна: окно, закончившееся до сплита, приходит в «сырых» ценах (NFLX до 10:1 в
+ * ноябре 2025 — ~1100 вместо ~110). Такие сплиты (splits) применяем сами.
+ */
+async function chart(ticker: string, yi: string, from: number, to: number, signal?: AbortSignal, splits: Split[] = []): Promise<RawBar[]> {
   const json = await apiGet(
     PROXY,
     DIRECT,
@@ -61,6 +66,19 @@ async function chart(ticker: string, yi: string, from: number, to: number, signa
     const c = q.close?.[i];
     if (![o, h, l, c].every((x) => typeof x === 'number' && Number.isFinite(x) && x > 0)) continue;
     out.push({ t: ts[i] * 1000, o, h: Math.max(h, o, c), l: Math.min(l, o, c), c, v: Number(q.volume?.[i]) || 0 });
+  }
+  if (yi !== '1d') {
+    const endDay = Math.floor(to / DAY) * DAY;
+    let f = 1;
+    for (const sp of splits) if (sp.t > endDay) f *= sp.factor;
+    if (f !== 1)
+      for (const b of out) {
+        b.o /= f;
+        b.h /= f;
+        b.l /= f;
+        b.c /= f;
+        b.v *= f;
+      }
   }
   return yi === '1d' ? out : cleanExtendedHours(out);
 }
@@ -139,6 +157,23 @@ export async function fetchSplits(symbol: string, from: number, to: number, sign
     .sort((a, b) => a.t - b.t);
 }
 
+/** Все сплиты актива (на время работы страницы, обновляются раз в сутки). */
+const splitCache = new Map<string, { at: number; list: Promise<Split[]> }>();
+export function allSplits(symbol: string, signal?: AbortSignal): Promise<Split[]> {
+  const key = tickerOf(symbol);
+  const c = splitCache.get(key);
+  if (c && Date.now() - c.at < DAY) return c.list;
+  const list = fetchSplits(symbol, Date.UTC(1970, 0, 2), Date.now(), signal);
+  splitCache.set(key, { at: Date.now(), list });
+  list.catch(() => splitCache.delete(key));
+  return list;
+}
+
+/** Дневные свечи Yahoo (с поправкой на все сплиты) — эталон для проверки истории из других источников. */
+export async function yahooDaily(symbol: string, from: number, to: number, signal?: AbortSignal): Promise<RawBar[]> {
+  return chart(tickerOf(symbol), '1d', from, to, signal);
+}
+
 export const yahooProvider: DataProvider = {
   id: 'yahoo',
   label: 'Yahoo Finance',
@@ -149,6 +184,8 @@ export const yahooProvider: DataProvider = {
     const now = Date.now();
     const intradayFrom = src.limitDays === Infinity ? -Infinity : now - src.limitDays * DAY;
     const raw: RawBar[] = [];
+    // внутридневные окна, закончившиеся до сплита, Yahoo отдаёт без поправки на него
+    const splits = src.yi === '1d' ? [] : await allSplits(symbol, opts.signal).catch(() => [] as Split[]);
     // старая часть — дневные свечи
     if (start < intradayFrom) {
       raw.push(...(await chart(ticker, '1d', start, Math.min(end, intradayFrom), opts.signal)));
@@ -158,11 +195,16 @@ export const yahooProvider: DataProvider = {
     const from = Math.max(start, intradayFrom);
     for (let s = from; s < end; s += src.maxSpanDays * DAY) {
       const e = Math.min(end, s + src.maxSpanDays * DAY);
-      raw.push(...(await chart(ticker, src.yi, s, e, opts.signal)));
+      raw.push(...(await chart(ticker, src.yi, s, e, opts.signal, splits)));
       await sleep(150); // бережём лимиты Yahoo
     }
     opts.onProgress?.(2, 2);
     return bucket(raw, dt, start, end);
   },
   // funding у акций нет: для перпетуалов используется ставка по умолчанию
+  // кэш свечей привязан к последнему известному сплиту: после нового сплита старые куски перекачиваются
+  async cacheTag(symbol: string, signal?: AbortSignal) {
+    const l = await allSplits(symbol, signal).catch(() => null);
+    return l?.length ? `s${l[l.length - 1].t}` : '';
+  },
 };

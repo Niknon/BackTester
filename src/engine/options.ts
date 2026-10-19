@@ -259,6 +259,35 @@ export interface VolInputs {
   rv7?: number | null;
   rv30?: number | null;
   dvol?: number | null;
+  /** отчёты впереди: момент реакции цены (t), выход отчёта (at) и ожидаемый скачок в дневных дисперсиях */
+  events?: { t: number; at?: number; ratio: number }[];
+}
+
+/** Рабочих дней в году (как в реализованной волатильности по будням). */
+const BUSINESS_DAYS = (365 / 7) * 5;
+
+/**
+ * Дисперсия скачков на отчётах, которые произойдут после now и до расчёта опциона (settleAt).
+ * Размер скачка — в дневных дисперсиях актива, переводим по базовой волатильности с той же надбавкой,
+ * что у IV: маркет-мейкер берёт премию и за событие.
+ */
+export function eventVariance(cfg: OptionModelConfig, inp: VolInputs, now: number, settleAt: number): number {
+  if (!inp.events?.length) return 0;
+  const base = cfg.ivSource === 'fixed' ? cfg.fixedIv : (inp.rv30 ?? inp.rv7 ?? cfg.fixedIv) * cfg.ivPremium;
+  const day = (base * base) / BUSINESS_DAYS;
+  let v = 0;
+  for (const e of inp.events) {
+    if (e.t <= now) continue;
+    if (e.t > settleAt) break;
+    v += e.ratio * day;
+  }
+  return v;
+}
+
+/** ATM IV с отчётами: полная дисперсия до экспирации = σ²·T + Σ скачков. */
+export function withEvents(atm: number, T: number, eventVar: number): number {
+  if (!(eventVar > 0) || !(T > 1e-9)) return atm;
+  return Math.min(100, Math.sqrt(atm * atm + eventVar / T));
 }
 
 /** ATM IV для срока T (лет) — с временной структурой. */
@@ -343,7 +372,7 @@ export function roundTick(x: number, tick: number, mode: 'round' | 'floor' | 'ce
 
 export function quoteOption(cfg: OptionModelConfig, inst: OptionInstrument, S: number, now: number, vol: VolInputs): OptionQuote {
   const T = instYears(inst, now);
-  const atm = atmIv(cfg, vol, T);
+  const atm = withEvents(atmIv(cfg, vol, T), T, eventVariance(cfg, vol, now, inst.settleAt ?? inst.expiry));
   const iv = smileIv(cfg, atm, S, inst.strike, T);
   const greeks = blackScholes(S, inst.strike, T, iv, inst.type);
   const tick = optionTickSize(S);

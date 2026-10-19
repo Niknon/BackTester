@@ -1,8 +1,9 @@
-import { getAsset } from '../data/assets';
+import { getAsset, optionClockOf } from '../data/assets';
 import { idbDelete, idbGet, idbKeys, idbSet } from '../data/cache';
 import { DAY, bucketStart, chartIntervalsFor, intervalMs } from '../data/intervals';
 import { loadFunding, loadSeries, PROVIDERS } from '../data/loader';
 import type { ProviderId } from '../data/types';
+import { fetchReportTimes } from '../data/news';
 import { fetchDvol } from '../data/volatility';
 import { Exchange, MAIN, type ExchangeState } from '../engine/exchange';
 import { MarketData } from '../engine/market';
@@ -37,7 +38,18 @@ async function loadSymbolInto(market: MarketData, cfg: SessionConfig, symbol: st
     onProgress: (d, t, m) => setProgress({ message: m ?? symbol, done: d, total: t }),
   });
   if (res.errors.length) setProgress({ errors: [...(useSession.getState().progress?.errors ?? []), ...res.errors] });
-  market.addSeries(symbol, res.series, res.provider);
+  // даты отчётов компании (SEC EDGAR): скачок на отчёте закладывается в цену опционов отдельно
+  let reports: number[] | undefined;
+  if (res.provider !== 'synthetic' && optionClockOf(symbol) === 'business') {
+    try {
+      setProgress({ message: `${symbol}: даты отчётов (SEC)` });
+      reports = await fetchReportTimes(symbol, warmupStart(cfg) - 400 * DAY, cfg.end + 120 * DAY, signal);
+    } catch (e: any) {
+      if (e?.name === 'AbortError') throw e;
+      setProgress({ errors: [...(useSession.getState().progress?.errors ?? []), `${symbol}: даты отчётов не загружены — опционы через отчёт будут дешевле реальных`] });
+    }
+  }
+  market.addSeries(symbol, res.series, res.provider, reports);
   if (cfg.fundingEnabled && !getAsset(symbol).spotOnly) {
     try {
       setProgress({ message: `${symbol}: история funding` });

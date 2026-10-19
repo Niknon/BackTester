@@ -7,7 +7,7 @@ import { bybitProvider } from './providers/bybit';
 import { okxProvider } from './providers/okx';
 import { binanceProvider } from './providers/binance';
 import { syntheticProvider } from './providers/synthetic';
-import { fetchSplits, yahooIntradayFrom, yahooProvider } from './providers/yahoo';
+import { allSplits, fetchSplits, yahooDaily, yahooIntradayFrom, yahooProvider, type Split } from './providers/yahoo';
 import { dukaInstrument, dukascopyDown, dukascopyProvider } from './providers/dukascopy';
 import { getAsset } from './assets';
 import { DAY } from './intervals';
@@ -40,7 +40,7 @@ export const PROVIDER_LIST: { id: ProviderId; label: string; note: string }[] = 
 
 const CHUNK_BARS = 5000;
 /** Версия кэша свечей источника: меняется, когда исправлена обработка его данных (старый кэш перекачивается). */
-const CACHE_VER: Partial<Record<ProviderId, string>> = { yahoo: '#2' };
+const CACHE_VER: Partial<Record<ProviderId, string>> = { yahoo: '#3' };
 /** Самая ранняя дата запроса: криптобиржи — с 2018, Yahoo (акции США) — с 1980, Dukascopy — с 2003. */
 const EARLIEST: Partial<Record<ProviderId, number>> = { yahoo: Date.UTC(1980, 0, 1), dukascopy: Date.UTC(2003, 0, 1) };
 const DEFAULT_EARLIEST = Date.UTC(2018, 0, 1);
@@ -85,9 +85,10 @@ async function loadFrom(p: DataProvider, o: LoadOptions, stats?: { partial: numb
   for (let cs = first; cs < o.end; cs += span) chunks.push(cs);
   const all: Candle[] = [];
   let done = 0;
+  const tag = p.cacheTag && p.id !== 'synthetic' ? await p.cacheTag(o.symbol, o.signal).catch(() => '') : '';
   for (const cs of chunks) {
     if (o.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-    const key = `${p.id}${CACHE_VER[p.id] ?? ''}|${o.symbol}|${o.interval}|${cs}`;
+    const key = `${p.id}${CACHE_VER[p.id] ?? ''}|${o.symbol}|${o.interval}|${cs}${tag ? `|${tag}` : ''}`;
     let chunk = p.id === 'synthetic' ? undefined : await idbGet<CachedChunk>('klines', key);
     if (!chunk || !chunk.complete) {
       const from = Math.max(cs, EARLIEST[p.id] ?? DEFAULT_EARLIEST);
@@ -169,13 +170,85 @@ export async function loadSeries(o: LoadOptions): Promise<LoadResult> {
   }
   if (best && stockLike && o.provider !== 'synthetic' && o.fallback !== false) {
     const merged = await withIntradayHistory(o, best, errors);
-    if (merged) return { series: merged, provider: 'dukascopy', errors };
+    if (merged) return { series: await repairSplitBlocks(merged, o, errors), provider: 'dukascopy', errors };
   }
-  if (best) return { series: best.series, provider: best.provider, errors };
+  if (best) return { series: stockLike && best.provider !== 'synthetic' ? await repairSplitBlocks(best.series, o, errors) : best.series, provider: best.provider, errors };
   throw new Error(`Не удалось загрузить ${o.symbol}:\n${errors.join('\n')}`);
 }
 
 const fmtDay = (t: number) => new Date(t).toISOString().slice(0, 10);
+
+/**
+ * Куски истории акции без поправки на сплит. Цена там отличается от остальной истории ровно в «сплитовое»
+ * число раз (×10 у NFLX/NVDA), и на стыках — ложные скачки цены: купленный колл на таком «скачке» даёт
+ * тысячи процентов. Источники: внутридневные окна Yahoo, закончившиеся до сплита, перпетуалы бирж,
+ * архивы. Сверяем каждый день с дневной ценой Yahoo (она скорректирована на все сплиты) и делим дни,
+ * где расхождение совпадает с произведением последующих сплитов.
+ */
+export function fixSplitBlocks(s: SeriesData, splits: Split[], ref: { t: number; c: number }[]): { series: SeriesData; fixed: { from: number; to: number; factor: number }[] } {
+  const fixed: { from: number; to: number; factor: number }[] = [];
+  if (!s.length || !splits.length || !ref.length) return { series: s, fixed };
+  const refDay = new Map<number, number>();
+  for (const r of ref) refDay.set(Math.floor(r.t / DAY), r.c);
+  const sp = [...splits].sort((a, b) => a.t - b.t);
+  // множитель «сырой» цены для дня d: произведение сплитов после него (и его «хвосты» — если часть сплитов учтена)
+  const candidates = (dayStart: number) => {
+    const later = sp.filter((x) => x.t > dayStart);
+    const out = [1];
+    for (let k = 0; k < later.length; k++) out.push(later.slice(k).reduce((a, x) => a * x.factor, 1));
+    return out;
+  };
+  const factorOfDay = new Map<number, number>();
+  let i = 0;
+  let prevF = 1;
+  while (i < s.length) {
+    const day = Math.floor(s.t[i] / DAY);
+    let j = i;
+    while (j < s.length && Math.floor(s.t[j] / DAY) === day) j++;
+    const ref = refDay.get(day);
+    let f = prevF;
+    if (ref) {
+      const r = Math.log(s.c[j - 1] / ref);
+      f = 1;
+      if (Math.abs(r) > 0.3) {
+        let best = 1;
+        for (const c of candidates(day * DAY)) if (Math.abs(r - Math.log(c)) < Math.abs(r - Math.log(best))) best = c;
+        if (best !== 1 && Math.abs(r - Math.log(best)) < 0.2) f = best;
+      }
+    }
+    if (f !== 1) factorOfDay.set(day, f);
+    prevF = f;
+    i = j;
+  }
+  if (!factorOfDay.size) return { series: s, fixed };
+  const c: Candle[] = [];
+  for (let k = 0; k < s.length; k++) {
+    const day = Math.floor(s.t[k] / DAY);
+    const f = factorOfDay.get(day) ?? 1;
+    c.push({ t: s.t[k], o: s.o[k] / f, h: s.h[k] / f, l: s.l[k] / f, c: s.c[k] / f, v: s.v[k] * f });
+    if (f !== 1) {
+      const last = fixed[fixed.length - 1];
+      if (last && last.factor === f && s.t[k] - last.to <= 5 * DAY) last.to = s.t[k];
+      else fixed.push({ from: s.t[k], to: s.t[k], factor: f });
+    }
+  }
+  return { series: seriesFromCandles(s.symbol, s.interval, c), fixed };
+}
+
+async function repairSplitBlocks(s: SeriesData, o: LoadOptions, errors: string[]): Promise<SeriesData> {
+  if (!s.length) return s;
+  try {
+    const splits = (await allSplits(o.symbol, o.signal)).filter((x) => x.t > s.t[0]);
+    if (!splits.length) return s;
+    const ref = await yahooDaily(o.symbol, s.t[0] - 7 * DAY, Date.now(), o.signal);
+    const { series, fixed } = fixSplitBlocks(s, splits, ref);
+    for (const f of fixed) errors.push(`${o.symbol}: свечи ${fmtDay(f.from)} — ${fmtDay(f.to)} пришли без поправки на сплит (цены ×${+f.factor.toFixed(4)}) — исправлено`);
+    return series;
+  } catch (e: any) {
+    if (e?.name === 'AbortError') throw e;
+    return s;
+  }
+}
 
 /**
  * Акции/индексы/сырьё на внутридневном интервале: Yahoo отдаёт 1ч только за 2 года, 5–30 мин — за 60 дней,

@@ -278,6 +278,11 @@ async function fetchEarnings(symbol: string, from: number, to: number, signal?: 
     });
 }
 
+/** Время выхода отчётов о прибыли (UTC) в [from, to) — для модели опционов. Пусто — не акция или нет в SEC. */
+export async function fetchReportTimes(symbol: string, from: number, to: number, signal?: AbortSignal): Promise<number[]> {
+  return (await fetchEarnings(symbol, from, to, signal)).map((e) => e.t);
+}
+
 /**
  * Время отчёта по времени подачи 8-K: до полудня по Нью-Йорку — «до открытия» (13:30 UTC),
  * позже — «после закрытия» (20:00 UTC) того же нью-йоркского дня.

@@ -14,7 +14,7 @@ import { getAsset, optionsAvailable, roundToStep } from '../data/assets';
 import { Exchange, MAIN } from './exchange';
 import type { MarketData } from './market';
 import { computeReport, type EquitySample, type PerformanceReport } from './metrics';
-import { atmIv, optionFee, optionQtyStep, optionSymbol, shortOptionMargin, type OptionQuote } from './options';
+import { atmIv, eventVariance, optionFee, optionQtyStep, optionSymbol, shortOptionMargin, withEvents, type OptionQuote } from './options';
 import type { ResolvedLeg } from './optionStrategies';
 import type { ClosedPnlRecord, SessionConfig, Side } from './types';
 
@@ -138,6 +138,10 @@ export interface OsSettings {
   marginPct: number;
   /** фиксированное кол-во контрактов на ногу */
   qty: number;
+  /** потолок средств на одну конструкцию включён */
+  useCap: boolean;
+  /** потолок средств (премия покупок + маржа продаж) на одну конструкцию, USDT: ликвидность реального рынка конечна */
+  capUsd: number;
   /** тейк-профит включён */
   useTp: boolean;
   /** тейк-профит, % от премии */
@@ -184,6 +188,9 @@ export const DEFAULT_OS: Omit<OsSettings, 'underlyings' | 'initialBalance'> = {
   notionalPct: 50,
   marginPct: 30,
   qty: 0.1,
+  // без потолка сложный процент «покупает» больше, чем весь рынок опционов
+  useCap: true,
+  capUsd: 1_000_000,
   // опционы держим до экспирации; тейк и стоп — по желанию
   useTp: false,
   tpPct: 50,
@@ -439,7 +446,7 @@ export function sizeFor(
   /** капитал вместо счёта биржи (предпросмотр на бирже сессии с другим депозитом) */
   capital?: { equity: number; available: number },
   underlying = s.underlyings[0],
-): { qty: number; step: number; error?: string } {
+): { qty: number; step: number; error?: string; capped?: boolean } {
   const st = OS_BY_KEY[s.structure];
   let step = optionQtyStep(S);
   if (hasPerpLeg(st)) step = Math.max(step, getAsset(underlying).qtyStep);
@@ -460,9 +467,14 @@ export function sizeFor(
       if (!Number.isFinite(eco.maxLoss)) return { qty: 0, step, error: 'Риск конструкции не ограничен — выберите размер по номиналу, марже или количеству' };
       raw = eco.maxLoss > 0 ? (equity * s.riskPct) / 100 / eco.maxLoss : 0;
   }
+  let capped = false;
+  if (s.useCap && s.capUsd > 0 && eco.margin > 0 && raw * eco.margin > s.capUsd) {
+    raw = s.capUsd / eco.margin;
+    capped = true;
+  }
   const qty = roundToStep(raw, step, 'floor');
   if (!(qty >= step - 1e-12)) return { qty: 0, step, error: `Объём меньше минимального шага ${step}` };
-  return { qty, step };
+  return { qty, step, capped };
 }
 
 /* ───────────────────────── Результат ───────────────────────── */
@@ -568,6 +580,10 @@ export interface OsStats {
   failedEntries: { n: number; cost: number };
   /** прочее изменение капитала, не привязанное к сделкам (funding перпетуальных ног и т. п.) */
   other: number;
+  /** входов, урезанных потолком средств на конструкцию */
+  capped: number;
+  /** конструкции, которые застали отчёт компании (скачок цены на отчёте пришёлся на время жизни) */
+  reports: { trades: number; wins: number; pnl: number };
   bestTrade: number;
   worstTrade: number;
   skips: OsSkipStats;
@@ -588,6 +604,8 @@ export interface OsResult {
   durationMs: number;
   bars: number;
   halted?: string;
+  /** подозрительные скачки цены базовых активов (вероятная ошибка данных) */
+  dataWarnings?: string[];
 }
 
 export interface OsRunOptions {
@@ -617,6 +635,8 @@ const emptyStats = (): OsStats => ({
   hedge: { trades: 0, pnl: 0, fees: 0, funding: 0 },
   failedEntries: { n: 0, cost: 0 },
   other: 0,
+  capped: 0,
+  reports: { trades: 0, wins: 0, pnl: 0 },
   bestTrade: 0,
   worstTrade: 0,
   skips: { maxOpen: 0, iv: 0, ivRank: 0, trend: 0, chain: 0, size: 0, funds: 0, rejected: 0 },
@@ -636,6 +656,7 @@ export function validateSettings(s: OsSettings): string | null {
   if (!(s.maxOpen >= 1)) return 'Максимум открытых конструкций — не меньше 1';
   if (s.useTp && !(s.tpPct > 0)) return 'Тейк-профит включён — укажите его размер';
   if (s.useSl && !(s.slPct > 0)) return 'Стоп-лосс включён — укажите его размер';
+  if (s.useCap && !(s.capUsd > 0)) return 'Потолок на конструкцию включён — укажите сумму';
   if (s.sizeMode === 'risk' && unlimitedRisk(st)) return 'У этой конструкции риск не ограничен — выберите размер по номиналу, марже или количеству';
   if (s.hedge && hasPerpLeg(st)) return 'Дельта-хедж недоступен для конструкций с перпетуалом';
   return null;
@@ -837,12 +858,14 @@ export async function runOptionStrategy(market: MarketData, sessionCfg: SessionC
     }
   };
 
-  const ivHistory = (u: string, T: number, days: number): number[] => {
+  /** ATM IV того же срока на прошлые дни (с отчётами, которые тогда были впереди) — для IV-ранга. */
+  const ivHistory = (u: string, T: number, settle: number, days: number): number[] => {
     const out: number[] = [];
     for (let k = 1; k <= days; k++) {
-      const vi = ex.volInputs(u, ex.now - k * DAY);
+      const at = ex.now - k * DAY;
+      const vi = ex.volInputs(u, at);
       if (vi.rv7 == null && vi.rv30 == null && vi.dvol == null) continue; // до начала истории
-      const v = atmIv(config.options, vi, T);
+      const v = withEvents(atmIv(config.options, vi, T), T, eventVariance(config.options, vi, at, settle - k * DAY));
       if (Number.isFinite(v) && v > 0) out.push(v);
     }
     return out;
@@ -937,7 +960,7 @@ export async function runOptionStrategy(market: MarketData, sessionCfg: SessionC
     if (s.ivRankMin > 0 || s.ivRankMax < 100) {
       const T = ex.optionT(a.u, pick.expiry);
       const days = Math.max(5, Math.round(s.ivRankDays));
-      const hist = ivHistory(a.u, T, days);
+      const hist = ivHistory(a.u, T, ex.settleTime(pick.expiry), days);
       if (hist.length < Math.min(20, days * 0.5)) {
         stats.skips.ivRank++;
         say(`Пропуск: мало истории для IV-ранга (${hist.length} из ${days} дн.)`, a.u);
@@ -968,6 +991,7 @@ export async function runOptionStrategy(market: MarketData, sessionCfg: SessionC
       say(`Пропуск: ${size.error}`, a.u);
       return;
     }
+    if (size.capped) stats.capped++;
     // хватает ли средств на премию покупок и маржу продаж (с запасом) — иначе не трогаем рынок вовсе
     const need = eco.margin * size.qty * 1.02;
     const avail = ex.available(ex.main);
@@ -1163,6 +1187,14 @@ export async function runOptionStrategy(market: MarketData, sessionCfg: SessionC
 
   // статистика
   trades.sort((x, y) => x.openTime - y.openTime);
+  /** реакция цены на отчёт (конец первой свечи реакции) пришлась на время жизни конструкции */
+  const spansReport = (g: OsTrade) => {
+    const ev = market.events.get(g.underlying);
+    if (!ev) return false;
+    const close = g.closeTime ?? market.end;
+    for (let k = 0; k < ev.length; k++) if (ev.t[k] > g.openTime && ev.t[k] <= close) return true;
+    return false;
+  };
   const n = trades.length;
   stats.trades = n;
   for (const g of trades) {
@@ -1185,6 +1217,11 @@ export async function runOptionStrategy(market: MarketData, sessionCfg: SessionC
     else as.premiumOut -= g.premium;
     stats.bestTrade = Math.max(stats.bestTrade, g.pnl);
     stats.worstTrade = Math.min(stats.worstTrade, g.pnl);
+    if (g.reason !== 'rejected' && spansReport(g)) {
+      stats.reports.trades++;
+      if (g.pnl > 0) stats.reports.wins++;
+      stats.reports.pnl += g.pnl;
+    }
   }
   for (const u of unders) stats.byAsset[u] ??= { trades: 0, wins: 0, pnl: 0, premiumIn: 0, premiumOut: 0 };
   if (n) {
@@ -1244,7 +1281,35 @@ export async function runOptionStrategy(market: MarketData, sessionCfg: SessionC
     durationMs: performance.now() - t0,
     bars: total,
     halted,
+    dataWarnings: priceJumpWarnings(market, unders),
   };
+}
+
+/**
+ * Скачки цены больше чем в 1.5 раза за одну свечу. У акций так выглядит кусок истории без поправки на сплит
+ * (×10 у NFLX/NVDA): купленный колл на таком «скачке» даёт тысячи процентов, и результат стратегии ложный.
+ */
+export function priceJumpWarnings(market: MarketData, unders: string[], limit = 1.5): string[] {
+  const out: string[] = [];
+  for (const u of unders) {
+    const sr = market.series.get(u);
+    if (!sr) continue;
+    const jumps: string[] = [];
+    let n = 0;
+    for (let i = 1; i < sr.length; i++) {
+      if (sr.t[i] < market.start - 30 * DAY || sr.t[i] >= market.end) continue;
+      const r = sr.c[i] / sr.c[i - 1];
+      if (!(r > limit || r < 1 / limit)) continue;
+      n++;
+      if (jumps.length < 3) jumps.push(`${new Date(sr.t[i]).toISOString().slice(0, 10)}: ${r > 1 ? '×' : '÷'}${(r > 1 ? r : 1 / r).toFixed(1)}`);
+    }
+    if (n)
+      out.push(
+        `${u.replace(/USDT$/, '')}: цена за одну свечу менялась больше чем в ${limit} раза — ${n} раз (${jumps.join(', ')}${n > jumps.length ? ', …' : ''}). ` +
+          'Если это не реальное событие, в данных ошибка (например, сплит без поправки) и результат стратегии недостоверен — перезагрузите историю.',
+      );
+  }
+  return out;
 }
 
 /* ───────────────────────── Перебор одного параметра ───────────────────────── */

@@ -15,4 +15,6 @@ export interface DataProvider {
   fetchKlines(symbol: string, interval: IntervalKey, start: number, end: number, opts?: FetchOpts): Promise<Klines>;
   /** История ставок финансирования за [start, end]. */
   fetchFunding?(symbol: string, start: number, end: number, opts?: FetchOpts): Promise<FundingPoint[]>;
+  /** Дополнение к ключу кэша свечей символа: меняется — кэш перекачивается (например, после сплита). */
+  cacheTag?(symbol: string, signal?: AbortSignal): Promise<string>;
 }

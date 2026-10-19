@@ -3,7 +3,7 @@ import { ASSETS, getAsset, SECTOR_LABEL } from '../data/assets';
 import { DAY } from '../data/intervals';
 import { realizedVolAt } from '../data/volatility';
 import { MAIN } from '../engine/exchange';
-import { blackScholes, expiryCode, optionQtyStep, optionSymbol, optionTickSize, shortOptionMargin, optionFee, smileIv, atmIv, type OptionQuote } from '../engine/options';
+import { blackScholes, expiryCode, optionQtyStep, optionSymbol, optionTickSize, shortOptionMargin, optionFee, smileIv, type OptionQuote } from '../engine/options';
 import type { Side } from '../engine/types';
 import { ensureSymbol } from '../store/actions';
 import { bump, toast, useSession, useTick } from '../store/session';
@@ -195,6 +195,7 @@ export function OptionsPage() {
     }
   }
 
+  const report = ex.nextReport(underlying);
   const optOrders = ex.activeOrders(MAIN).filter((o) => o.category === 'option');
   const optHistory = ex.state.closedPnl.filter((c) => c.accountId === MAIN && c.category === 'option').slice(-200).reverse();
   const strikeDec = autoDecimals(S);
@@ -211,6 +212,14 @@ export function OptionsPage() {
           </div>
           <Info label={`ATM IV (${dte(expiry, ex.now)})`} value={fmtPct(chain?.atm ?? NaN, 1, false)} />
           <Info label="RV 7д / 30д" value={`${fmtPct(rv?.rv7 ?? NaN, 1, false)} / ${fmtPct(rv?.rv30 ?? NaN, 1, false)}`} />
+          {report && report.t - ex.now < 45 * DAY && (
+            <span className="shrink-0" title="Дата отчёта — из SEC EDGAR. Ожидаемый скачок оценён по прошлым отчётам этой компании и заложен в IV экспираций, которые его захватывают; после отчёта IV возвращается к обычной.">
+              <Info
+                label={`Отчёт ${fmtShortDate(report.at)} ${new Date(report.at).getUTCHours() >= 17 ? 'после закр.' : 'до откр.'}`}
+                value={<span className="text-brand">±{fmtPct(report.move, 1, false)}</span>}
+              />
+            </span>
+          )}
           {!getAsset(underlying).hasOptions && (
             <span className="shrink-0" title="На Bybit опционов на этот актив нет: котировки строятся по той же модели (Black–Scholes, IV из реализованной волатильности), исполнение и экспирация — как у опционов Bybit">
               <Badge color="violet">модельные опционы</Badge>
@@ -414,7 +423,7 @@ function VolPanel({ chain, base, expiries }: { chain: NonNullable<ReturnType<imp
       {
         name: 'ATM IV',
         color: '#f7a600',
-        points: expiries.map((e) => ({ x: (e - ex.now) / DAY, y: atmIv(ex.config.options, vol, ex.optionT(`${base}USDT`, e)) * 100 })),
+        points: expiries.map((e) => ({ x: (e - ex.now) / DAY, y: ex.atmIvFor(`${base}USDT`, e, ex.now, vol) * 100 })),
       },
     ];
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1105,8 +1114,7 @@ function Builder({
   };
   const net = payoff.reduce((s, l) => s + -l.qty * l.entry, 0);
   const T = ex.optionT(`${base}USDT`, expiry);
-  const vol = ex.volInputs(`${base}USDT`);
-  const atmV = atmIv(ex.config.options, vol, T);
+  const atmV = ex.atmIvFor(`${base}USDT`, expiry);
   const execAll = () => {
     let ok = 0;
     for (const l of legs) {

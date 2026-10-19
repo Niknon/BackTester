@@ -1,7 +1,7 @@
 import { intervalMs } from '../data/intervals';
 import type { FundingPoint, IntervalKey, ProviderId, SeriesData } from '../data/types';
 import { lowerBound } from '../data/types';
-import { computeHourProfile, computeRealizedVol, type DvolSeries, type RealizedVol } from '../data/volatility';
+import { computeEventVol, computeHourProfile, computeRealizedVol, reportSpans, type DvolSeries, type EventVol, type RealizedVol } from '../data/volatility';
 import type { HourProfile } from '../data/intervals';
 import { optionClockOf } from '../data/assets';
 
@@ -18,6 +18,10 @@ export class MarketData {
   /** профиль активности по часам суток — для «рабочих» часов опционов на акции/сырьё */
   readonly hourProfile = new Map<string, HourProfile | null>();
   readonly dvol = new Map<string, DvolSeries>();
+  /** отчёты компаний (время выхода, UTC) — для опционов на акции */
+  readonly reports = new Map<string, number[]>();
+  /** скачки цены на отчётах: окна реакции и их размер */
+  readonly events = new Map<string, EventVol>();
   readonly providers = new Map<string, ProviderId>();
   private ptr = new Map<string, number>();
 
@@ -45,13 +49,22 @@ export class MarketData {
     return this.series.has(symbol);
   }
 
-  addSeries(symbol: string, s: SeriesData, provider: ProviderId) {
+  /**
+   * Добавить свечи символа. reports — время выхода отчётов компании: свечи реакции на них не входят в
+   * реализованную волатильность и профиль часов, а скачок закладывается в опционы, которые его захватывают.
+   */
+  addSeries(symbol: string, s: SeriesData, provider: ProviderId, reports?: number[]) {
     this.series.set(symbol, s);
     this.providers.set(symbol, provider);
+    if (reports) this.reports.set(symbol, reports);
     const clock = optionClockOf(symbol);
-    const profile = clock === 'business' ? computeHourProfile(s) : null;
+    const { spans, at, mask } = reportSpans(s, this.reports.get(symbol) ?? []);
+    const profile = clock === 'business' ? computeHourProfile(s, mask) : null;
     this.hourProfile.set(symbol, profile);
-    this.rv.set(symbol, computeRealizedVol(s, clock, profile));
+    const rv = computeRealizedVol(s, clock, profile, mask);
+    this.rv.set(symbol, rv);
+    if (spans.length) this.events.set(symbol, computeEventVol(s, spans, at, rv, profile, clock));
+    else this.events.delete(symbol);
     this.ptr.delete(symbol);
   }
 
