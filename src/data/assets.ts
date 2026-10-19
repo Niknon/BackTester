@@ -393,6 +393,19 @@ export function strikeStyle(spec: AssetSpec): 'crypto' | 'equity' {
   return spec.simOptions ? 'equity' : 'crypto';
 }
 
+/**
+ * Часы опционов: у акций, ETF, индексов и сырья (TradFi, токенизированные акции, золото) время до экспирации
+ * и волатильность считаются по будням — в выходные торгов нет и цена стоит. Крипта — круглосуточно.
+ */
+export function optionClock(spec: AssetSpec): 'calendar' | 'business' {
+  return spec.group === 'crypto' && !spec.calmWeekends ? 'calendar' : 'business';
+}
+
+/** Часы опционов по символу (неизвестный актив — календарные). */
+export function optionClockOf(symbol: string): 'calendar' | 'business' {
+  return hasAsset(symbol) ? optionClock(getAsset(symbol)) : 'calendar';
+}
+
 export function optionsAvailable(spec: AssetSpec) {
   return !spec.spotOnly && (spec.hasOptions || !!spec.simOptions);
 }

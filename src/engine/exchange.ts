@@ -1,4 +1,4 @@
-import { getAsset, maintenanceMarginRate, qtyStepFor, roundToStep, strikeStyle } from '../data/assets';
+import { getAsset, maintenanceMarginRate, optionClockOf, qtyStepFor, roundToStep, strikeStyle } from '../data/assets';
 import { HOUR } from '../data/intervals';
 import { dvolAt, realizedVolAt } from '../data/volatility';
 import type { MarketData } from './market';
@@ -15,7 +15,7 @@ import {
   quoteOption,
   shortOptionMargin,
   atmIv,
-  yearsTo,
+  optionYears,
   type OptionQuote,
   type VolInputs,
 } from './options';
@@ -256,10 +256,25 @@ export class Exchange {
     if (!inst) {
       const parsed = parseOptionSymbol(symbol);
       if (!parsed) return null;
-      inst = parsed;
+      inst = { ...parsed, clock: optionClockOf(parsed.underlying), settleAt: this.settleTime(parsed.expiry) };
       this.instCache.set(symbol, inst);
     }
     return inst;
+  }
+
+  /**
+   * Момент, по цене которого биржа рассчитает экспирацию: начало свечи, внутри которой она наступает
+   * (на часовых свечах 08:00 — граница свечи, на дневных — 00:00 того же дня). До него и считается
+   * временная стоимость — иначе на дневках продавец получал бы 8 часов распада «бесплатно».
+   */
+  settleTime(expiry: number): number {
+    const dt = this.market.dt;
+    return this.market.start + Math.floor((expiry - this.market.start) / dt) * dt;
+  }
+
+  /** Годы до экспирации для базового актива: по его часам (будни у акций) и до момента расчёта. */
+  optionT(underlying: string, expiry: number, now = this.state.now): number {
+    return optionYears(this.settleTime(expiry), now, optionClockOf(underlying));
   }
 
   volInputs(underlying: string, now = this.state.now): VolInputs {
@@ -281,9 +296,9 @@ export class Exchange {
     return this.optionQuote(symbol, S)?.mark ?? 0;
   }
 
-  /** Список экспираций для базового актива в текущий момент. */
+  /** Список экспираций для базового актива в текущий момент (без тех, что уже рассчитываются на ближайшей свече). */
   optionExpiries(base: string): number[] {
-    return listExpiries(this.state.now, base);
+    return listExpiries(this.state.now, base).filter((e) => this.settleTime(e) > this.state.now);
   }
 
   /** Цепочка опционов для экспирации: страйки + котировки коллов и путов. */
@@ -291,7 +306,7 @@ export class Exchange {
     const underlying = `${base}USDT`;
     const S = this.price(underlying);
     if (!Number.isFinite(S)) return { S, rows: [] as { strike: number; call: OptionQuote; put: OptionQuote }[], atm: 0 };
-    const T = yearsTo(expiry, this.state.now);
+    const T = this.optionT(underlying, expiry);
     const vol = this.volInputs(underlying);
     const atm = atmIv(this.config.options, vol, T);
     const strikes = listStrikes(S, T, atm, strikeStyle(getAsset(underlying)));
@@ -1068,7 +1083,7 @@ export class Exchange {
     const inst = this.optionInstrument(o.symbol);
     if (!inst) return this.reject(o, 'Некорректный символ опциона');
     if (!this.market.has(inst.underlying)) return this.reject(o, `Нет данных базового актива ${inst.underlying}`);
-    if (inst.expiry <= this.state.now) return this.reject(o, 'Опцион уже экспирирован');
+    if (inst.expiry <= this.state.now || (inst.settleAt ?? inst.expiry) <= this.state.now) return this.reject(o, 'Опцион уже экспирирован');
     if (o.triggerPrice !== undefined) return this.reject(o, 'Условные ордера для опционов не поддерживаются');
     const q = this.optionQuote(o.symbol);
     if (!q) return this.reject(o, 'Нет котировки');

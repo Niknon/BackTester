@@ -1,6 +1,6 @@
 import { getAsset, roundToStep } from '../data/assets';
 import type { Exchange } from './exchange';
-import { optionSymbol, quoteOption, parseOptionSymbol } from './options';
+import { optionSymbol, quoteOption } from './options';
 import type { Order, Side } from './types';
 
 /**
@@ -146,8 +146,9 @@ export function resolveStrategy(
 export function legValueAt(ex: Exchange, leg: ResolvedLeg, S: number, at: number) {
   if (leg.type === 'F') return S;
   if (leg.expiry <= at) return leg.type === 'C' ? Math.max(0, S - leg.strike) : Math.max(0, leg.strike - S);
-  const inst = parseOptionSymbol(leg.symbol)!;
-  return quoteOption(ex.config.options, inst, S, at, ex.volInputs(inst.underlying)).mark;
+  const inst = ex.optionInstrument(leg.symbol)!;
+  // момент «at» — ближняя экспирация: берём момент её расчёта на этой бирже
+  return quoteOption(ex.config.options, inst, S, ex.settleTime(at), ex.volInputs(inst.underlying)).mark;
 }
 
 /**

@@ -2,6 +2,7 @@ import { intervalMs } from '../data/intervals';
 import type { FundingPoint, IntervalKey, ProviderId, SeriesData } from '../data/types';
 import { lowerBound } from '../data/types';
 import { computeRealizedVol, type DvolSeries, type RealizedVol } from '../data/volatility';
+import { optionClockOf } from '../data/assets';
 
 /**
  * Рыночные данные сессии: свечи базового интервала по символам, funding,
@@ -44,7 +45,7 @@ export class MarketData {
   addSeries(symbol: string, s: SeriesData, provider: ProviderId) {
     this.series.set(symbol, s);
     this.providers.set(symbol, provider);
-    this.rv.set(symbol, computeRealizedVol(s));
+    this.rv.set(symbol, computeRealizedVol(s, optionClockOf(symbol)));
     this.ptr.delete(symbol);
   }
 

@@ -44,10 +44,10 @@ const ROLE_STYLE: Record<string, { color: string; width: 1 | 2; style: LineStyle
 };
 
 /** Свечи базового актива + страйки каждой конструкции на время её жизни + отметки входа и выхода. */
-export function OptionTradesChart({ market, result, focus }: { market: MarketData; result: OsResult; focus?: { from: number; to: number } | null }) {
+export function OptionTradesChart({ market, result, underlying, focus }: { market: MarketData; result: OsResult; underlying: string; focus?: { from: number; to: number } | null }) {
   const ref = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
-  const symbol = result.settings.underlying;
+  const symbol = underlying;
 
   useEffect(() => {
     const s = market.series.get(symbol);
@@ -86,7 +86,8 @@ export function OptionTradesChart({ market, result, focus }: { market: MarketDat
     const slots: number[] = [];
     const lines = new Map<string, Pt[]>();
     const tfS = tfMs / 1000;
-    for (const g of result.trades) {
+    const trades = result.trades.filter((g) => g.underlying === symbol);
+    for (const g of trades) {
       const a = at(g.openTime);
       const close = g.closeTime ?? g.openTime;
       const b = at(Math.min(close, market.end));
@@ -120,10 +121,10 @@ export function OptionTradesChart({ market, result, focus }: { market: MarketDat
     }
 
     // отметки
-    const many = result.trades.length > 80;
+    const many = trades.length > 80;
     const short = OS_BY_KEY[result.settings.structure].short;
     const markers: SeriesMarker<Time>[] = [];
-    for (const g of result.trades) {
+    for (const g of trades) {
       markers.push({ time: at(g.openTime), position: 'belowBar', shape: 'arrowUp', color: '#a78bfa', text: many ? '' : short });
       if (g.closeTime !== undefined)
         markers.push({

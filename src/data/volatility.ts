@@ -1,5 +1,5 @@
 import { apiGet } from './http';
-import { HOUR, intervalMs } from './intervals';
+import { HOUR, businessMs, intervalMs } from './intervals';
 import { lowerBound, type SeriesData } from './types';
 
 /**
@@ -15,8 +15,15 @@ export interface RealizedVol {
 }
 
 const ANNUAL_HOURS = 24 * 365;
+/** Рабочих часов в году (пн–пт круглосуточно): годовая волатильность по будням сопоставима с календарной. */
+const ANNUAL_BUSINESS_HOURS = 24 * (365 / 7) * 5;
 
-export function computeRealizedVol(s: SeriesData): RealizedVol {
+/**
+ * Реализованная волатильность (7 и 30 дней), годовая.
+ * clock = 'business' — для акций/сырья: дисперсия делится на рабочее время (выходные не считаются, гэп
+ * выходных относится к утру понедельника). Так она согласована с ценой опционов, у которых время тоже идёт по будням.
+ */
+export function computeRealizedVol(s: SeriesData, clock: 'calendar' | 'business' = 'calendar'): RealizedVol {
   // выборка цен закрытия на часовой сетке (или по барам, если бар > 1ч)
   const times: number[] = [];
   const closes: number[] = [];
@@ -43,7 +50,8 @@ export function computeRealizedVol(s: SeriesData): RealizedVol {
   for (let i = 1; i < n; i++) {
     const r = Math.log(closes[i] / closes[i - 1]);
     r2[i] = Number.isFinite(r) ? r * r : 0;
-    hoursPer[i] = Math.max(1, (t[i] - t[i - 1]) / HOUR);
+    const span = clock === 'business' ? businessMs(t[i - 1], t[i]) : t[i] - t[i - 1];
+    hoursPer[i] = Math.max(clock === 'business' ? 0.25 : 1, span / HOUR);
   }
   const roll = (windowHours: number, out: Float64Array) => {
     let sum = 0;
@@ -57,7 +65,7 @@ export function computeRealizedVol(s: SeriesData): RealizedVol {
         hrs -= hoursPer[j];
         j++;
       }
-      out[i] = hrs >= 24 ? Math.sqrt((sum / hrs) * ANNUAL_HOURS) : NaN;
+      out[i] = hrs >= 24 ? Math.sqrt((sum / hrs) * (clock === 'business' ? ANNUAL_BUSINESS_HOURS : ANNUAL_HOURS)) : NaN;
     }
     out[0] = NaN;
   };

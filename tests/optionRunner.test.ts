@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { DAY, HOUR } from '../src/data/intervals';
 import { MAIN } from '../src/engine/exchange';
 import {
+  DEFAULT_OS,
   OS_BY_KEY,
   makeSettings,
   pickExpiry,
@@ -14,6 +15,11 @@ import {
   validateSettings,
 } from '../src/engine/optionRunner';
 import { T0, mkConfig, mkExchange, mkMarket } from './helpers';
+import { MarketData } from '../src/engine/market';
+import { seriesFromCandles, type Candle } from '../src/data/types';
+import { DEFAULT_FEES, DEFAULT_OPTION_MODEL } from '../src/engine/types';
+import { optionYears, quoteOption, parseOptionSymbol } from '../src/engine/options';
+import { Exchange } from '../src/engine/exchange';
 
 type Bar = [number, number, number, number];
 
@@ -128,7 +134,7 @@ describe('Опционная стратегия: прогон', () => {
   });
 
   it('тейк-профит на 50% премии срабатывает раньше экспирации', async () => {
-    const s = makeSettings('BTCUSDT', 100_000, { structure: 'short_strangle', delta: 0.15, dte: 7, schedule: 'daily', entryHour: 8, maxOpen: 1, tpPct: 50, slPct: 0, sizeMode: 'notional', notionalPct: 20 });
+    const s = makeSettings('BTCUSDT', 100_000, { structure: 'short_strangle', delta: 0.15, dte: 7, schedule: 'daily', entryHour: 8, maxOpen: 1, useTp: true, tpPct: 50, sizeMode: 'notional', notionalPct: 20 });
     const r = await runOptionStrategy(market(), cfg(), s);
     expect(r.ok).toBe(true);
     const tp = r.trades.filter((g) => g.reason === 'tp');
@@ -218,5 +224,139 @@ describe('Опционная стратегия: прогон', () => {
     expect(r.ok).toBe(true);
     expect(Object.keys(ex.main.positions).length).toBe(0);
     expect(ex.account(MAIN).walletBalance).toBe(10_000);
+  });
+});
+
+describe('Опционная стратегия: тейк/стоп, экспирация, безопасный вход', () => {
+  const days = 12;
+  const market = () => mkMarket({ BTCUSDT: choppy(100000, 24 * days, 0.01, 6) }, warm());
+  const cfg = () => mkConfig({ end: T0 + 24 * days * HOUR, initialBalance: 100_000 });
+
+  it('тейк и стоп по умолчанию выключены — даже если заданы проценты', async () => {
+    expect(DEFAULT_OS.useTp).toBe(false);
+    expect(DEFAULT_OS.useSl).toBe(false);
+    const s = makeSettings('BTCUSDT', 100_000, { structure: 'short_strangle', delta: 0.15, dte: 7, schedule: 'daily', maxOpen: 1, tpPct: 10, slPct: 10, sizeMode: 'notional', notionalPct: 20 });
+    const r = await runOptionStrategy(market(), cfg(), s);
+    expect(r.ok).toBe(true);
+    expect(r.trades.some((g) => g.reason === 'tp' || g.reason === 'sl')).toBe(false);
+  });
+
+  it('экспирация «не позже N дней»: позиция не переживает следующий недельный вход', () => {
+    const now = Date.UTC(2025, 0, 6, 9); // понедельник
+    const exps = [Date.UTC(2025, 0, 7, 8), Date.UTC(2025, 0, 10, 8), Date.UTC(2025, 0, 17, 8), Date.UTC(2025, 0, 31, 8)];
+    expect(pickExpiry(exps, now, 7, 'within')).toBe(exps[1]); // пятница этой недели
+    expect(pickExpiry(exps, now, 12, 'within')).toBe(exps[2]);
+    // раньше N дней ничего нет — ближайшая
+    expect(pickExpiry([Date.UTC(2025, 0, 31, 8)], now, 7, 'within')).toBe(Date.UTC(2025, 0, 31, 8));
+    // из пятницы 08:00 — следующая пятница ровно через 7 дней
+    const fri = Date.UTC(2025, 0, 10, 8);
+    expect(pickExpiry([Date.UTC(2025, 0, 11, 8), Date.UTC(2025, 0, 17, 8), Date.UTC(2025, 0, 24, 8)], fri, 7, 'within')).toBe(Date.UTC(2025, 0, 17, 8));
+  });
+
+  it('не хватает средств — вход не делается и счёт не тает на откатах', async () => {
+    // кондор на 50 BTC при депозите 100 000: маржи не хватит ни разу
+    const s = makeSettings('BTCUSDT', 100_000, { structure: 'iron_condor', dte: 1, schedule: 'daily', sizeMode: 'qty', qty: 50 });
+    const r = await runOptionStrategy(market(), cfg(), s);
+    expect(r.ok).toBe(true);
+    expect(r.trades.length).toBe(0);
+    expect(r.stats.skips.funds).toBeGreaterThan(5);
+    expect(r.report.endEquity).toBeCloseTo(100_000, 6);
+  });
+});
+
+describe('Опционная стратегия: несколько активов', () => {
+  it('BTC и ETH на общем счёте: сделки по обоим, итоги по активам, книги сходятся с капиталом', async () => {
+    const days = 12;
+    // у каждого актива — своя разогревочная история (своя волатильность и уровень цен)
+    const m = new MarketData('1h', T0, T0 + 24 * days * HOUR);
+    for (const [sym, px, amp, per] of [['BTCUSDT', 100000, 0.01, 6], ['ETHUSDT', 3000, 0.012, 5]] as const) {
+      const bars = [...choppy(px, 24 * 40, 0.03, 4), ...choppy(px, 24 * days, amp, per)];
+      const candles: Candle[] = bars.map((b, i) => ({ t: T0 + (i - 24 * 40) * HOUR, o: b[0], h: b[1], l: b[2], c: b[3], v: 100 }));
+      m.addSeries(sym, seriesFromCandles(sym, '1h', candles), 'synthetic');
+    }
+    const c = mkConfig({ end: T0 + 24 * days * HOUR, initialBalance: 100_000, symbols: ['BTCUSDT', 'ETHUSDT'] });
+    const s = makeSettings(['BTCUSDT', 'ETHUSDT'], 100_000, { structure: 'iron_condor', delta: 0.1, wingPct: 3, dte: 1, expiryMode: 'nearest', schedule: 'daily', maxOpen: 1, sizeMode: 'risk', riskPct: 2 });
+    const r = await runOptionStrategy(m, c, s);
+    expect(r.error).toBeUndefined();
+    const btc = r.trades.filter((g) => g.underlying === 'BTCUSDT');
+    const eth = r.trades.filter((g) => g.underlying === 'ETHUSDT');
+    expect(btc.length).toBeGreaterThan(5);
+    expect(eth.length).toBeGreaterThan(5);
+    expect(eth.every((g) => g.legs.every((l) => l.symbol.startsWith('ETH-')))).toBe(true);
+    expect(r.stats.byAsset.BTCUSDT.trades).toBe(btc.length);
+    expect(r.stats.byAsset.ETHUSDT.trades).toBe(eth.length);
+    // по каждому активу — не больше одной открытой конструкции одновременно
+    for (const list of [btc, eth]) for (let i = 1; i < list.length; i++) expect(list[i].openTime).toBeGreaterThanOrEqual(list[i - 1].closeTime!);
+    const sum = r.trades.reduce((a, g) => a + g.pnl, 0) + r.stats.failedEntries.cost + r.stats.other;
+    expect(r.report.endEquity - r.report.startEquity).toBeCloseTo(sum, 4);
+    expect(Math.abs(r.stats.other)).toBeLessThan(0.01);
+    expect(r.benchLabel).toMatch(/BTC\+ETH/);
+  });
+});
+
+/* ── честность цены: время до экспирации совпадает с тем, за которое цена реально успевает измениться ── */
+
+/** Детерминированное геометрическое блуждание с заданной годовой волатильностью на дневных свечах. */
+function gbmDaily(n: number, sigma: number, seed = 1) {
+  let x = seed;
+  const rnd = () => ((x = (x * 1103515245 + 12345) % 2147483648) / 2147483648);
+  const gauss = () => Math.sqrt(-2 * Math.log(rnd() + 1e-12)) * Math.cos(2 * Math.PI * rnd());
+  const sd = sigma * Math.sqrt(1 / 365);
+  const out: Bar[] = [];
+  let p = 50000;
+  for (let i = 0; i < n; i++) {
+    const c = p * Math.exp(sd * gauss() - (sd * sd) / 2);
+    out.push([p, Math.max(p, c), Math.min(p, c), c]);
+    p = c;
+  }
+  return out;
+}
+
+describe('Честная цена опционов на дневных свечах и у акций', () => {
+  it('дневные свечи: проданный суточный стрэддл в среднем не приносит «бесплатной» прибыли', async () => {
+    const days = 900;
+    const sigma = 0.6;
+    const bars = gbmDaily(days + 40, sigma, 7);
+    const start = Date.UTC(2024, 0, 1);
+    const m = new MarketData('1d', start + 40 * DAY, start + (days + 40) * DAY);
+    const candles: Candle[] = bars.map((b, i) => ({ t: start + i * DAY, o: b[0], h: b[1], l: b[2], c: b[3], v: 1 }));
+    m.addSeries('BTCUSDT', seriesFromCandles('BTCUSDT', '1d', candles), 'synthetic');
+    const c = mkConfig({ start: m.start, end: m.end, baseInterval: '1d', initialBalance: 1e9, fees: { ...DEFAULT_FEES, optionTaker: 0, optionDelivery: 0 }, options: { ...DEFAULT_OPTION_MODEL, ivSource: 'fixed', fixedIv: sigma, ivPremium: 1, spreadPct: 0, skew: 0, smile: 0 } });
+    const s = makeSettings('BTCUSDT', 1e9, { structure: 'short_straddle', dte: 1, expiryMode: 'nearest', schedule: 'daily', maxOpen: 1, sizeMode: 'qty', qty: 1 });
+    const r = await runOptionStrategy(m, c, s, { sliceMs: 1e9, noLog: true });
+    expect(r.ok).toBe(true);
+    expect(r.trades.length).toBeGreaterThan(days * 0.8); // позиция, которая рассчитывается на ближайшей свече, лимит не занимает
+    const prem = r.trades.reduce((a, g) => a + g.premium, 0);
+    const pnl = r.trades.reduce((a, g) => a + g.pnl, 0);
+    // раньше премия считалась до 08:00, а расчёт шёл по открытию дня (00:00): +13% премии «даром»
+    expect(Math.abs(pnl / prem)).toBeLessThan(0.07);
+  });
+
+  it('акции: время опциона идёт по будням — за выходные он не дешевеет', () => {
+    const fri = Date.UTC(2025, 0, 10, 21);
+    const mon = Date.UTC(2025, 0, 13, 8);
+    // пт 21:00 → пн 08:00: 3 часа пятницы + 8 часов понедельника, выходные не считаются
+    expect(optionYears(Date.UTC(2025, 0, 17, 8), fri, 'business') - optionYears(Date.UTC(2025, 0, 17, 8), mon, 'business')).toBeCloseTo((11 * 3600_000) / ((365 / 7) * 5 * DAY), 12);
+    const inst = { ...parseOptionSymbol('NVDA-17JAN25-150-C-USDT')!, clock: 'business' as const };
+    const vol = { rv7: 0.5, rv30: 0.5, dvol: null };
+    const sat = quoteOption(DEFAULT_OPTION_MODEL, inst, 140, Date.UTC(2025, 0, 11, 12), vol).mark;
+    const sun = quoteOption(DEFAULT_OPTION_MODEL, inst, 140, Date.UTC(2025, 0, 12, 20), vol).mark;
+    expect(sun).toBeCloseTo(sat, 10);
+    // у крипты (календарные часы) — дешевеет
+    const btc = parseOptionSymbol('BTC-17JAN25-100000-C-USDT')!;
+    expect(quoteOption(DEFAULT_OPTION_MODEL, btc, 95000, Date.UTC(2025, 0, 12, 20), vol).mark).toBeLessThan(quoteOption(DEFAULT_OPTION_MODEL, btc, 95000, Date.UTC(2025, 0, 11, 12), vol).mark);
+  });
+
+  it('биржа: у акции NVDA часы опционов рабочие, на дневках момент расчёта — начало дня экспирации', () => {
+    const start = Date.UTC(2025, 0, 6);
+    const m = new MarketData('1d', start, start + 20 * DAY);
+    const candles: Candle[] = Array.from({ length: 60 }, (_, i) => ({ t: start - 40 * DAY + i * DAY, o: 140, h: 141, l: 139, c: 140, v: 1 }));
+    m.addSeries('NVDAUSDT', seriesFromCandles('NVDAUSDT', '1d', candles), 'synthetic');
+    const ex = Exchange.create(mkConfig({ start, end: start + 20 * DAY, baseInterval: '1d', symbols: ['NVDAUSDT'] }), m);
+    const inst = ex.optionInstrument('NVDA-10JAN25-150-C-USDT')!;
+    expect(inst.clock).toBe('business');
+    expect(inst.settleAt).toBe(Date.UTC(2025, 0, 10, 0));
+    // экспирация, которая рассчитается на ближайшей свече, в списке уже не показывается
+    expect(ex.optionExpiries('NVDA').every((e) => ex.settleTime(e) > ex.now)).toBe(true);
   });
 });

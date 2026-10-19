@@ -1,4 +1,4 @@
-import { DAY } from '../data/intervals';
+import { DAY, businessMs } from '../data/intervals';
 import type { OptionInstrument, OptionModelConfig } from './types';
 
 /* ───────────────────────── Блэк–Шоулз ───────────────────────── */
@@ -308,6 +308,22 @@ export function yearsTo(expiry: number, now: number) {
   return Math.max(0, (expiry - now) / YEAR_MS);
 }
 
+export type OptionClock = 'calendar' | 'business';
+
+/** Год рабочего времени: 52.14 недели × 5 дней — та же длина, что у годовой реализованной волатильности по будням. */
+const BUSINESS_YEAR_MS = (365 / 7) * 5 * DAY;
+
+/** Годы до экспирации по часам опциона: календарные (24/7) или рабочие (без выходных). */
+export function optionYears(expiry: number, now: number, clock: OptionClock = 'calendar') {
+  if (clock === 'calendar') return yearsTo(expiry, now);
+  return Math.max(0, businessMs(now, expiry) / BUSINESS_YEAR_MS);
+}
+
+/** Годы до экспирации инструмента — с учётом его часов и момента расчёта на бирже. */
+export function instYears(inst: OptionInstrument, now: number) {
+  return optionYears(inst.settleAt ?? inst.expiry, now, inst.clock);
+}
+
 export interface OptionQuote {
   inst: OptionInstrument;
   underlyingPrice: number;
@@ -326,7 +342,7 @@ export function roundTick(x: number, tick: number, mode: 'round' | 'floor' | 'ce
 }
 
 export function quoteOption(cfg: OptionModelConfig, inst: OptionInstrument, S: number, now: number, vol: VolInputs): OptionQuote {
-  const T = yearsTo(inst.expiry, now);
+  const T = instYears(inst, now);
   const atm = atmIv(cfg, vol, T);
   const iv = smileIv(cfg, atm, S, inst.strike, T);
   const greeks = blackScholes(S, inst.strike, T, iv, inst.type);

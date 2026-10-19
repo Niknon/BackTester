@@ -5,6 +5,20 @@ export const HOUR = 60 * MINUTE;
 export const DAY = 24 * HOUR;
 export const WEEK = 7 * DAY;
 
+const MONDAY0 = 4 * DAY; // 1970-01-05 — понедельник
+
+/** Миллисекунды будней (пн–пт, UTC) от понедельника 05.01.1970 до t. */
+function weekdayMs(t: number) {
+  const x = t - MONDAY0;
+  const w = Math.floor(x / WEEK);
+  return w * 5 * DAY + Math.min(x - w * WEEK, 5 * DAY);
+}
+
+/** Рабочее (будничное, пн–пт UTC) время между a и b, мс. */
+export function businessMs(a: number, b: number) {
+  return weekdayMs(b) - weekdayMs(a);
+}
+
 export interface IntervalDef {
   key: IntervalKey;
   ms: number;

@@ -3,7 +3,7 @@ import { ASSETS, getAsset, SECTOR_LABEL } from '../data/assets';
 import { DAY } from '../data/intervals';
 import { realizedVolAt } from '../data/volatility';
 import { MAIN } from '../engine/exchange';
-import { blackScholes, expiryCode, optionQtyStep, optionSymbol, optionTickSize, shortOptionMargin, optionFee, yearsTo, smileIv, atmIv, type OptionQuote } from '../engine/options';
+import { blackScholes, expiryCode, optionQtyStep, optionSymbol, optionTickSize, shortOptionMargin, optionFee, smileIv, atmIv, type OptionQuote } from '../engine/options';
 import type { Side } from '../engine/types';
 import { ensureSymbol } from '../store/actions';
 import { bump, toast, useSession, useTick } from '../store/session';
@@ -414,7 +414,7 @@ function VolPanel({ chain, base, expiries }: { chain: NonNullable<ReturnType<imp
       {
         name: 'ATM IV',
         color: '#f7a600',
-        points: expiries.map((e) => ({ x: (e - ex.now) / DAY, y: atmIv(ex.config.options, vol, yearsTo(e, ex.now)) * 100 })),
+        points: expiries.map((e) => ({ x: (e - ex.now) / DAY, y: atmIv(ex.config.options, vol, ex.optionT(`${base}USDT`, e)) * 100 })),
       },
     ];
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1104,7 +1104,7 @@ function Builder({
     setLegs(p.legs(atm, step).map((l, i) => ({ ...l, strike: nearest(l.strike), qty: qty0, id: Date.now() + i })));
   };
   const net = payoff.reduce((s, l) => s + -l.qty * l.entry, 0);
-  const T = yearsTo(expiry, ex.now);
+  const T = ex.optionT(`${base}USDT`, expiry);
   const vol = ex.volInputs(`${base}USDT`);
   const atmV = atmIv(ex.config.options, vol, T);
   const execAll = () => {

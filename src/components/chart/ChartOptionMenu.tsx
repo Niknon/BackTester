@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { getAsset, optionsAvailable, strikeStyle } from '../../data/assets';
-import { optionQtyStep, optionSymbol, strikeStep, yearsTo } from '../../engine/options';
+import { optionQtyStep, optionSymbol, strikeStep } from '../../engine/options';
 import type { Side } from '../../engine/types';
 import { fmtShortDate, fmtNum, exactDecimals } from '../../lib/format';
 import { bump, toast, useSession, type PreviewLine } from '../../store/session';
@@ -39,7 +39,7 @@ export function ChartOptionMenu({ symbol, price, onDone }: { symbol: string; pri
   if (!Number.isFinite(S) || !(price > 0)) return null;
   // страйк — уровень клика, округлённый до шага страйков этой экспирации (не ограничиваемся
   // видимой цепочкой: иначе дальние уровни «прилипали» к краю цепочки или к страйку открытой позиции)
-  const kStep = strikeStep(S, yearsTo(expiry, ex.now), strikeStyle(getAsset(symbol)));
+  const kStep = strikeStep(S, ex.optionT(symbol, expiry), strikeStyle(getAsset(symbol)));
   const strike = Math.max(kStep, Number(((Math.round(price / kStep) + shift) * kStep).toPrecision(10)));
   const call = ex.optionQuote(optionSymbol(spec.base, expiry, strike, 'C'));
   const put = ex.optionQuote(optionSymbol(spec.base, expiry, strike, 'P'));

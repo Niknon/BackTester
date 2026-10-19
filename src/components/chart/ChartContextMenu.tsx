@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { getAsset, optionsAvailable, roundToStep, qtyStepFor, strikeStyle } from '../../data/assets';
 import { MAIN } from '../../engine/exchange';
-import { optionQtyStep, strikeStep, yearsTo } from '../../engine/options';
+import { optionQtyStep, strikeStep } from '../../engine/options';
 import { resolveStrategy, STRATEGIES } from '../../engine/optionStrategies';
 import type { Side } from '../../engine/types';
 import { autoDecimals, exactDecimals, fmtNum, fmtPct, fmtPrice, fmtQty, fmtShortDate, fmtUsd, pnlClass } from '../../lib/format';
@@ -237,7 +237,7 @@ function StrategyTab({ symbol, price, onDone }: { symbol: string; price: number;
   const step = optionQtyStep(S);
   const qty = qtyMap[base] ?? Number((step * 10).toPrecision(6));
   // страйки — сетка с шагом экспирации вокруг уровня клика
-  const kStep = expiry ? strikeStep(S, yearsTo(expiry, ex.now), strikeStyle(getAsset(symbol))) : 0;
+  const kStep = expiry ? strikeStep(S, ex.optionT(symbol, expiry), strikeStyle(getAsset(symbol))) : 0;
   const [shift, setShift] = useState(0);
   const center = kStep ? Math.max(kStep, Number(((Math.round(price / kStep) + shift) * kStep).toPrecision(10))) : price;
   const N = 40;

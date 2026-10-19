@@ -1,8 +1,9 @@
 /**
  * Опционная стратегия «на автопилоте»: по расписанию открывает выбранную конструкцию
- * (кондор, стрэнгл, спреды, покрытый колл…) со страйками по дельте, ведёт позиции
- * и закрывает их по правилам (тейк/стоп от премии, оставшиеся дни, дельта, пробой страйка)
- * или держит до экспирации. Опционально — дельта-хедж перпетуалом.
+ * (кондор, стрэнгл, спреды, покрытый колл…) со страйками по дельте по одному или нескольким
+ * базовым активам на общем счёте, держит до экспирации или закрывает по правилам
+ * (дни до экспирации, дельта, пробой страйка; по желанию — тейк/стоп от премии).
+ * Опционально — дельта-хедж перпетуалом.
  *
  * Прогон идёт в отдельном экземпляре биржи на данных сессии: цены, IV-модель, комиссии,
  * маржа, экспирация и ликвидации — те же, что при ручной торговле. Решения принимаются
@@ -13,8 +14,8 @@ import { getAsset, optionsAvailable, roundToStep } from '../data/assets';
 import { Exchange, MAIN } from './exchange';
 import type { MarketData } from './market';
 import { computeReport, type EquitySample, type PerformanceReport } from './metrics';
-import { atmIv, optionFee, optionQtyStep, optionSymbol, shortOptionMargin, yearsTo, type OptionQuote } from './options';
-import { openStrategy, type ResolvedLeg } from './optionStrategies';
+import { atmIv, optionFee, optionQtyStep, optionSymbol, shortOptionMargin, type OptionQuote } from './options';
+import type { ResolvedLeg } from './optionStrategies';
 import type { ClosedPnlRecord, SessionConfig, Side } from './types';
 
 /* ───────────────────────── Конструкции ───────────────────────── */
@@ -94,9 +95,12 @@ export function unlimitedRisk(st: OsStructure) {
 export type OsSchedule = 'daily' | 'weekdays' | 'weekly';
 export type OsSizeMode = 'risk' | 'notional' | 'margin' | 'qty';
 export type OsTrend = 'off' | 'above' | 'below';
+/** within — самая дальняя экспирация не позже N дней (позиция не переживает следующий вход); nearest — ближайшая к N дням */
+export type OsExpiryMode = 'within' | 'nearest';
 
 export interface OsSettings {
-  underlying: string;
+  /** базовые активы: по каждому стратегия ведёт свои конструкции, счёт и маржа — общие */
+  underlyings: string[];
   structure: OsStructureKey;
   initialBalance: number;
   /** целевая |дельта| основных ног (0.05…0.5) */
@@ -106,14 +110,15 @@ export interface OsSettings {
   wingPct: number;
   /** |дельта| крыла */
   wingDelta: number;
-  /** желаемые дни до экспирации (берётся ближайшая доступная) */
+  /** дни до экспирации */
   dte: number;
+  expiryMode: OsExpiryMode;
   schedule: OsSchedule;
   /** день недели для weekly: 0 — вс, 1 — пн … 5 — пт */
   weekday: number;
   /** час входа, UTC */
   entryHour: number;
-  /** максимум одновременно открытых конструкций */
+  /** максимум одновременно открытых конструкций на каждый актив */
   maxOpen: number;
   /** фильтр ATM IV, % (0 — выкл.) */
   ivMin: number;
@@ -125,7 +130,7 @@ export interface OsSettings {
   trend: OsTrend;
   trendSma: number;
   sizeMode: OsSizeMode;
-  /** % капитала: макс. убыток на экспирации */
+  /** % капитала: макс. убыток на экспирации (на одну конструкцию) */
   riskPct: number;
   /** % капитала: номинал базового актива на одну ногу */
   notionalPct: number;
@@ -133,9 +138,13 @@ export interface OsSettings {
   marginPct: number;
   /** фиксированное кол-во контрактов на ногу */
   qty: number;
-  /** тейк-профит, % от премии (0 — выкл.) */
+  /** тейк-профит включён */
+  useTp: boolean;
+  /** тейк-профит, % от премии */
   tpPct: number;
-  /** стоп-лосс, % от премии (0 — выкл.) */
+  /** стоп-лосс включён */
+  useSl: boolean;
+  /** стоп-лосс, % от премии */
   slPct: number;
   /** закрыть, когда до экспирации осталось ≤ N дней (0 — держать до экспирации) */
   closeDte: number;
@@ -151,13 +160,14 @@ export interface OsSettings {
   hedgeHours: number;
 }
 
-export const DEFAULT_OS: Omit<OsSettings, 'underlying' | 'initialBalance'> = {
+export const DEFAULT_OS: Omit<OsSettings, 'underlyings' | 'initialBalance'> = {
   structure: 'iron_condor',
   delta: 0.15,
   wingMode: 'pct',
   wingPct: 5,
   wingDelta: 0.05,
   dte: 7,
+  expiryMode: 'within',
   schedule: 'weekly',
   weekday: 5,
   entryHour: 8,
@@ -174,7 +184,10 @@ export const DEFAULT_OS: Omit<OsSettings, 'underlying' | 'initialBalance'> = {
   notionalPct: 50,
   marginPct: 30,
   qty: 0.1,
+  // опционы держим до экспирации; тейк и стоп — по желанию
+  useTp: false,
   tpPct: 50,
+  useSl: false,
   slPct: 200,
   closeDte: 0,
   deltaExit: 0,
@@ -190,14 +203,16 @@ export interface OsPreset {
   s: Partial<OsSettings>;
 }
 
+const HOLD = { useTp: false, useSl: false, closeDte: 0, deltaExit: 0, breachExit: false, hedge: false } as const;
+
 export const OS_PRESETS: OsPreset[] = [
-  { name: 'Недельный кондор 15Δ', desc: 'Каждую пятницу 08:00 UTC — железный кондор на неделю, тейк 50% премии, стоп 200%.', s: { structure: 'iron_condor', delta: 0.15, wingMode: 'pct', wingPct: 5, dte: 7, schedule: 'weekly', weekday: 5, entryHour: 8, maxOpen: 1, sizeMode: 'risk', riskPct: 5, tpPct: 50, slPct: 200, closeDte: 0, deltaExit: 0, breachExit: false, hedge: false } },
-  { name: 'Стрэнгл 45/21 (16Δ)', desc: 'Классика продажи премии: шорт стрэнгл 16Δ на ~45 дней, выход на 50% прибыли или за 21 день до экспирации.', s: { structure: 'short_strangle', delta: 0.16, dte: 45, schedule: 'weekly', weekday: 1, entryHour: 8, maxOpen: 3, sizeMode: 'notional', notionalPct: 30, tpPct: 50, slPct: 0, closeDte: 21, deltaExit: 0, breachExit: false, hedge: false } },
-  { name: 'Продажа пута 25Δ (месяц)', desc: 'Шорт пут 25Δ на ~30 дней с риском «как cash-secured put», тейк 50%.', s: { structure: 'short_put', delta: 0.25, dte: 30, schedule: 'weekly', weekday: 5, entryHour: 8, maxOpen: 2, sizeMode: 'risk', riskPct: 40, tpPct: 50, slPct: 0, closeDte: 0, deltaExit: 0, breachExit: false, hedge: false } },
-  { name: 'Ежедневный кондор 10Δ', desc: 'Каждый день в 08:00 UTC — кондор на сутки, держим до экспирации.', s: { structure: 'iron_condor', delta: 0.1, wingMode: 'pct', wingPct: 3, dte: 1, schedule: 'daily', entryHour: 8, maxOpen: 1, sizeMode: 'risk', riskPct: 2, tpPct: 0, slPct: 0, closeDte: 0, deltaExit: 0, breachExit: false, hedge: false } },
-  { name: 'Покрытый колл 30Δ (неделя)', desc: 'Лонг перпетуала и продажа недельного колла 30Δ каждую пятницу.', s: { structure: 'covered_call', delta: 0.3, dte: 7, schedule: 'weekly', weekday: 5, entryHour: 8, maxOpen: 1, sizeMode: 'notional', notionalPct: 80, tpPct: 0, slPct: 0, closeDte: 0, deltaExit: 0, breachExit: false, hedge: false } },
-  { name: 'Лонг стрэддл + дельта-хедж', desc: 'Покупка ATM-стрэддла на месяц с хеджем перпетуалом: ставка на то, что рынок будет двигаться сильнее, чем заложено в IV.', s: { structure: 'long_straddle', dte: 30, schedule: 'weekly', weekday: 1, entryHour: 8, maxOpen: 1, sizeMode: 'risk', riskPct: 5, tpPct: 0, slPct: 50, closeDte: 7, deltaExit: 0, breachExit: false, hedge: true, hedgeBand: 0.1, hedgeHours: 4 } },
-  { name: 'Пут-спред при высокой IV', desc: 'Бычий пут-спред 25Δ, только если IV-ранг выше 50% и цена выше SMA 50.', s: { structure: 'put_credit', delta: 0.25, wingMode: 'pct', wingPct: 5, dte: 14, schedule: 'daily', entryHour: 8, maxOpen: 3, ivRankMin: 50, ivRankMax: 100, trend: 'above', trendSma: 50, sizeMode: 'risk', riskPct: 3, tpPct: 50, slPct: 150, closeDte: 2, deltaExit: 0, breachExit: false, hedge: false } },
+  { name: 'Недельный кондор 15Δ', desc: 'Каждую пятницу 08:00 UTC — железный кондор на неделю, держим до экспирации.', s: { ...HOLD, structure: 'iron_condor', delta: 0.15, wingMode: 'pct', wingPct: 5, dte: 7, expiryMode: 'within', schedule: 'weekly', weekday: 5, entryHour: 8, maxOpen: 1, sizeMode: 'risk', riskPct: 5 } },
+  { name: 'Стрэнгл 45/21 (16Δ)', desc: 'Классика продажи премии: шорт стрэнгл 16Δ на ~45 дней, выход на 50% прибыли или за 21 день до экспирации.', s: { ...HOLD, structure: 'short_strangle', delta: 0.16, dte: 45, expiryMode: 'nearest', schedule: 'weekly', weekday: 1, entryHour: 8, maxOpen: 3, sizeMode: 'notional', notionalPct: 30, useTp: true, tpPct: 50, closeDte: 21 } },
+  { name: 'Продажа пута 25Δ (месяц)', desc: 'Шорт пут 25Δ на ~30 дней с риском «как cash-secured put», держим до экспирации.', s: { ...HOLD, structure: 'short_put', delta: 0.25, dte: 30, expiryMode: 'nearest', schedule: 'weekly', weekday: 5, entryHour: 8, maxOpen: 2, sizeMode: 'risk', riskPct: 40 } },
+  { name: 'Ежедневный кондор 10Δ', desc: 'Каждый день в 08:00 UTC — кондор на сутки, держим до экспирации.', s: { ...HOLD, structure: 'iron_condor', delta: 0.1, wingMode: 'pct', wingPct: 3, dte: 1, expiryMode: 'nearest', schedule: 'daily', entryHour: 8, maxOpen: 1, sizeMode: 'risk', riskPct: 2 } },
+  { name: 'Покрытый колл 30Δ (неделя)', desc: 'Лонг перпетуала и продажа недельного колла 30Δ каждую пятницу.', s: { ...HOLD, structure: 'covered_call', delta: 0.3, dte: 7, expiryMode: 'within', schedule: 'weekly', weekday: 5, entryHour: 8, maxOpen: 1, sizeMode: 'notional', notionalPct: 80 } },
+  { name: 'Лонг стрэддл + дельта-хедж', desc: 'Покупка ATM-стрэддла на месяц с хеджем перпетуалом: ставка на то, что рынок будет двигаться сильнее, чем заложено в IV. Закрытие за 7 дней до экспирации.', s: { ...HOLD, structure: 'long_straddle', dte: 30, expiryMode: 'nearest', schedule: 'weekly', weekday: 1, entryHour: 8, maxOpen: 1, sizeMode: 'risk', riskPct: 5, closeDte: 7, hedge: true, hedgeBand: 0.1, hedgeHours: 4 } },
+  { name: 'Пут-спред при высокой IV', desc: 'Бычий пут-спред 25Δ, только если IV-ранг выше 50% и цена выше SMA 50; держим до экспирации.', s: { ...HOLD, structure: 'put_credit', delta: 0.25, wingMode: 'pct', wingPct: 5, dte: 14, expiryMode: 'within', schedule: 'daily', entryHour: 8, maxOpen: 3, ivRankMin: 50, ivRankMax: 100, trend: 'above', trendSma: 50, sizeMode: 'risk', riskPct: 3 } },
 ];
 
 /** Активы сессии, на которые есть опционы. */
@@ -211,8 +226,8 @@ export function optionUnderlyings(market: MarketData): string[] {
   });
 }
 
-export function makeSettings(underlying: string, initialBalance: number, over: Partial<OsSettings> = {}): OsSettings {
-  return { ...DEFAULT_OS, underlying, initialBalance, ...over };
+export function makeSettings(underlyings: string | string[], initialBalance: number, over: Partial<OsSettings> = {}): OsSettings {
+  return { ...DEFAULT_OS, underlyings: Array.isArray(underlyings) ? underlyings : [underlyings], initialBalance, ...over };
 }
 
 /* ───────────────────────── Выбор ног ───────────────────────── */
@@ -221,12 +236,22 @@ type ChainRow = { strike: number; call: OptionQuote; put: OptionQuote };
 
 const quoteOf = (r: ChainRow, t: 'C' | 'P') => (t === 'C' ? r.call : r.put);
 
-/** Экспирация, ближайшая к желаемому числу дней (при равенстве — более поздняя). Не раньше чем через 2 часа. */
-export function pickExpiry(expiries: number[], now: number, dte: number): number | null {
+/**
+ * Выбор экспирации. Не ближе 2 часов до момента расчёта (settle — момент расчёта экспирации на бирже).
+ *  - nearest: ближайшая к N дням (при равенстве — более поздняя);
+ *  - within: самая дальняя не позже N дней (+1 ч допуска), а если таких нет — ближайшая.
+ */
+export function pickExpiry(expiries: number[], now: number, dte: number, mode: OsExpiryMode = 'nearest', settle: (e: number) => number = (e) => e): number | null {
+  const ok = expiries.filter((e) => settle(e) - now >= 2 * HOUR).sort((a, b) => a - b);
+  if (!ok.length) return null;
+  if (mode === 'within') {
+    const lim = now + dte * DAY + HOUR;
+    const inside = ok.filter((e) => e <= lim);
+    return inside.length ? inside[inside.length - 1] : ok[0];
+  }
   let best: number | null = null;
   let bestD = Infinity;
-  for (const e of expiries) {
-    if (e - now < 2 * HOUR) continue;
+  for (const e of ok) {
     const d = Math.abs((e - now) / DAY - dte);
     if (d < bestD - 1e-9 || (Math.abs(d - bestD) < 1e-9 && best !== null && e > best)) {
       best = e;
@@ -259,17 +284,17 @@ export interface PickResult {
 }
 
 /**
- * Подобрать ноги конструкции на текущий момент биржи (объём — `qty` на ногу).
+ * Подобрать ноги конструкции на текущий момент биржи (объём — `qty` на ногу) для базового актива.
  * Основные ноги — по дельте (или ATM), крылья — на заданном расстоянии в сторону OTM.
  */
-export function pickLegs(ex: Exchange, s: OsSettings, qty: number): PickResult {
+export function pickLegs(ex: Exchange, s: OsSettings, qty: number, underlying = s.underlyings[0]): PickResult {
   const st = OS_BY_KEY[s.structure];
-  const spec = getAsset(s.underlying);
+  const spec = getAsset(underlying);
   const base = spec.base;
-  const S = ex.price(s.underlying);
+  const S = ex.price(underlying);
   const fail = (error: string): PickResult => ({ legs: [], expiry: 0, S, atmIv: 0, error });
   if (!Number.isFinite(S)) return fail('Нет цены базового актива');
-  const expiry = pickExpiry(ex.optionExpiries(base), ex.now, s.dte);
+  const expiry = pickExpiry(ex.optionExpiries(base), ex.now, s.dte, s.expiryMode, (e) => ex.settleTime(e));
   if (!expiry) return fail('Нет подходящей экспирации');
   const chain = ex.optionChain(base, expiry);
   const rows = chain.rows;
@@ -293,7 +318,7 @@ export function pickLegs(ex: Exchange, s: OsSettings, qty: number): PickResult {
   const legs: ResolvedLeg[] = [];
   for (const l of st.legs) {
     if (l.type === 'F') {
-      legs.push({ category: 'linear', symbol: s.underlying, side: l.side, type: 'F', strike: 0, expiry: 0, qty, price: S, mark: S, delta: l.side === 'Buy' ? qty : -qty });
+      legs.push({ category: 'linear', symbol: underlying, side: l.side, type: 'F', strike: 0, expiry: 0, qty, price: S, mark: S, delta: l.side === 'Buy' ? qty : -qty });
       continue;
     }
     const t = l.type;
@@ -413,10 +438,11 @@ export function sizeFor(
   S: number,
   /** капитал вместо счёта биржи (предпросмотр на бирже сессии с другим депозитом) */
   capital?: { equity: number; available: number },
+  underlying = s.underlyings[0],
 ): { qty: number; step: number; error?: string } {
   const st = OS_BY_KEY[s.structure];
   let step = optionQtyStep(S);
-  if (hasPerpLeg(st)) step = Math.max(step, getAsset(s.underlying).qtyStep);
+  if (hasPerpLeg(st)) step = Math.max(step, getAsset(underlying).qtyStep);
   const equity = capital?.equity ?? ex.equity(ex.main);
   const available = capital?.available ?? ex.available(ex.main);
   let raw: number;
@@ -441,7 +467,7 @@ export function sizeFor(
 
 /* ───────────────────────── Результат ───────────────────────── */
 
-export type OsExitReason = 'tp' | 'sl' | 'dte' | 'delta' | 'breach' | 'expiry' | 'end' | 'liquidation';
+export type OsExitReason = 'tp' | 'sl' | 'dte' | 'delta' | 'breach' | 'expiry' | 'end' | 'liquidation' | 'rejected';
 
 export const OS_REASON_LABEL: Record<OsExitReason, string> = {
   tp: 'Тейк-профит',
@@ -452,6 +478,7 @@ export const OS_REASON_LABEL: Record<OsExitReason, string> = {
   expiry: 'Экспирация',
   end: 'Конец периода',
   liquidation: 'Ликвидация',
+  rejected: 'Остаток отклонённого входа',
 };
 
 export interface OsLeg {
@@ -474,6 +501,7 @@ export interface OsLeg {
 
 export interface OsTrade {
   id: number;
+  underlying: string;
   structure: OsStructureKey;
   openTime: number;
   closeTime?: number;
@@ -496,17 +524,29 @@ export interface OsTrade {
   mae: number;
   /** проданный опцион экспирировался в деньгах */
   itm?: boolean;
+  /** доля списания при ликвидации (страховой фонд и т. п.), уже включена в pnl */
+  liqAdj?: number;
 }
 
 export interface OsSkipStats {
-  schedule: number;
   maxOpen: number;
   iv: number;
   ivRank: number;
   trend: number;
   chain: number;
   size: number;
+  /** не хватает средств на премию и маржу (вход не делался) */
+  funds: number;
+  /** биржа отклонила ногу — вход откатан */
   rejected: number;
+}
+
+export interface OsAssetStats {
+  trades: number;
+  wins: number;
+  pnl: number;
+  premiumIn: number;
+  premiumOut: number;
 }
 
 export interface OsStats {
@@ -522,7 +562,12 @@ export interface OsStats {
   avgIv: number;
   expiredItm: number;
   byReason: Partial<Record<OsExitReason, { n: number; pnl: number }>>;
+  byAsset: Record<string, OsAssetStats>;
   hedge: { trades: number; pnl: number; fees: number; funding: number };
+  /** потери на откатах отклонённых входов (спред и комиссии) */
+  failedEntries: { n: number; cost: number };
+  /** прочее изменение капитала, не привязанное к сделкам (funding перпетуальных ног и т. п.) */
+  other: number;
   bestTrade: number;
   worstTrade: number;
   skips: OsSkipStats;
@@ -535,10 +580,11 @@ export interface OsResult {
   report: PerformanceReport;
   equity: EquitySample[];
   bench: EquitySample[];
+  benchLabel: string;
   trades: OsTrade[];
   stats: OsStats;
   log: { t: number; msg: string }[];
-  hedgeFills: { t: number; side: Side; qty: number; price: number }[];
+  hedgeFills: { t: number; underlying: string; side: Side; qty: number; price: number }[];
   durationMs: number;
   bars: number;
   halted?: string;
@@ -567,16 +613,20 @@ const emptyStats = (): OsStats => ({
   avgIv: 0,
   expiredItm: 0,
   byReason: {},
+  byAsset: {},
   hedge: { trades: 0, pnl: 0, fees: 0, funding: 0 },
+  failedEntries: { n: 0, cost: 0 },
+  other: 0,
   bestTrade: 0,
   worstTrade: 0,
-  skips: { schedule: 0, maxOpen: 0, iv: 0, ivRank: 0, trend: 0, chain: 0, size: 0, rejected: 0 },
+  skips: { maxOpen: 0, iv: 0, ivRank: 0, trend: 0, chain: 0, size: 0, funds: 0, rejected: 0 },
 });
 
 /** Проверка настроек до прогона. */
 export function validateSettings(s: OsSettings): string | null {
   const st = OS_BY_KEY[s.structure];
   if (!st) return 'Неизвестная конструкция';
+  if (!s.underlyings?.length) return 'Выберите хотя бы один базовый актив';
   if (!(s.initialBalance > 0)) return 'Укажите депозит';
   if (usesDelta(st) && !(s.delta > 0 && s.delta < 1)) return 'Дельта основных ног должна быть между 0 и 1';
   if (usesWing(st) && s.wingMode === 'pct' && !(s.wingPct > 0)) return 'Ширина крыла должна быть больше 0';
@@ -584,6 +634,8 @@ export function validateSettings(s: OsSettings): string | null {
   if (!(s.dte > 0)) return 'Дней до экспирации должно быть больше 0';
   if (s.closeDte > 0 && s.closeDte >= s.dte) return '«Закрыть за N дней» должно быть меньше срока опциона';
   if (!(s.maxOpen >= 1)) return 'Максимум открытых конструкций — не меньше 1';
+  if (s.useTp && !(s.tpPct > 0)) return 'Тейк-профит включён — укажите его размер';
+  if (s.useSl && !(s.slPct > 0)) return 'Стоп-лосс включён — укажите его размер';
   if (s.sizeMode === 'risk' && unlimitedRisk(st)) return 'У этой конструкции риск не ограничен — выберите размер по номиналу, марже или количеству';
   if (s.hedge && hasPerpLeg(st)) return 'Дельта-хедж недоступен для конструкций с перпетуалом';
   return null;
@@ -591,12 +643,24 @@ export function validateSettings(s: OsSettings): string | null {
 
 /* ───────────────────────── Прогон ───────────────────────── */
 
-export async function runOptionStrategy(market: MarketData, base: SessionConfig, s: OsSettings, opts: OsRunOptions = {}): Promise<OsResult> {
+interface AssetState {
+  u: string;
+  base: string;
+  qtyStep: number;
+  minQty: number;
+  lastEntryDay: number;
+  lastMaxOpenDay: number;
+  lastHedge: number;
+}
+
+export async function runOptionStrategy(market: MarketData, sessionCfg: SessionConfig, s: OsSettings, opts: OsRunOptions = {}): Promise<OsResult> {
   const t0 = performance.now();
   const log: OsResult['log'] = [];
   const stats = emptyStats();
   const trades: OsTrade[] = [];
   const hedgeFills: OsResult['hedgeFills'] = [];
+  const unders = [...new Set(s.underlyings)];
+  const benchLabel = unders.length === 1 ? `${unders[0].replace(/USDT$/, '')} buy&hold` : `Корзина ${unders.map((u) => u.replace(/USDT$/, '')).join('+')} (поровну)`;
   const fail = (error: string): OsResult => ({
     ok: false,
     error,
@@ -604,6 +668,7 @@ export async function runOptionStrategy(market: MarketData, base: SessionConfig,
     report: computeReport([], []),
     equity: [],
     bench: [],
+    benchLabel,
     trades,
     stats,
     log,
@@ -613,28 +678,30 @@ export async function runOptionStrategy(market: MarketData, base: SessionConfig,
   });
   const verr = validateSettings(s);
   if (verr) return fail(verr);
-  if (!market.has(s.underlying)) return fail(`Нет данных по ${s.underlying}`);
-  let spec;
-  try {
-    spec = getAsset(s.underlying);
-  } catch {
-    return fail(`Неизвестный актив ${s.underlying}`);
+  const assets: AssetState[] = [];
+  for (const u of unders) {
+    if (!market.has(u)) return fail(`Нет данных по ${u}`);
+    let spec;
+    try {
+      spec = getAsset(u);
+    } catch {
+      return fail(`Неизвестный актив ${u}`);
+    }
+    if (!optionsAvailable(spec)) return fail(`На ${u} нет опционов`);
+    assets.push({ u, base: spec.base, qtyStep: spec.qtyStep, minQty: spec.minQty, lastEntryDay: -1, lastMaxOpenDay: -1, lastHedge: -Infinity });
   }
-  if (!optionsAvailable(spec)) return fail(`На ${s.underlying} нет опционов`);
   const st = OS_BY_KEY[s.structure];
-  const config: SessionConfig = { ...base, initialBalance: s.initialBalance, symbols: [s.underlying] };
+  const config: SessionConfig = { ...sessionCfg, initialBalance: s.initialBalance, symbols: unders };
   const ex = Exchange.create(config, market);
   ex.quiet = true;
-  ex.activeSymbols = [s.underlying];
-  const say = (msg: string) => {
-    if (!opts.noLog && log.length < 5000) log.push({ t: ex.now, msg });
+  ex.activeSymbols = unders;
+  const multi = unders.length > 1;
+  const say = (msg: string, u?: string) => {
+    if (!opts.noLog && log.length < 5000) log.push({ t: ex.now, msg: multi && u ? `[${u.replace(/USDT$/, '')}] ${msg}` : msg });
   };
   const fmt = (x: number, d = 2) => (Number.isFinite(x) ? x.toFixed(d) : '∞');
   const open: OsTrade[] = [];
   let seq = 0;
-  let lastEntryDay = -1;
-  let lastMaxOpenDay = -1;
-  let lastHedge = -Infinity;
   let halted: string | undefined;
   let liquidated = false;
 
@@ -654,21 +721,20 @@ export async function runOptionStrategy(market: MarketData, base: SessionConfig,
     g.closeTime ??= Math.max(g.openTime, ...g.legs.map((l) => l.exitTime ?? g.openTime));
   };
 
-  // цена расчёта по экспирациям (из события биржи); запасной вариант — открытие бара экспирации
-  const settlePx = new Map<number, number>();
+  // цена расчёта по экспирациям (из события биржи); запасной вариант — открытие свечи, в которой наступила экспирация
+  const settlePx = new Map<string, number>();
   ex.on((e) => {
     if (e.type === 'liquidation' && e.accountId === MAIN) liquidated = true;
     if (e.type === 'expiry' && e.accountId === MAIN)
       for (const it of e.items) {
         const inst = ex.optionInstrument(it.symbol);
-        if (inst) settlePx.set(inst.expiry, it.underlyingPrice);
+        if (inst) settlePx.set(`${inst.underlying}|${inst.expiry}`, it.underlyingPrice);
       }
   });
-  const series = market.series.get(s.underlying)!;
-  const settlementPrice = (expiry: number) => {
-    const known = settlePx.get(expiry);
+  const settlementPrice = (u: string, expiry: number) => {
+    const known = settlePx.get(`${u}|${expiry}`);
     if (known !== undefined) return known;
-    // бар, внутри которого наступила экспирация, — по цене его открытия (как в движке биржи)
+    const series = market.series.get(u)!;
     let lo = 0;
     let hi = series.length;
     while (lo < hi) {
@@ -687,7 +753,7 @@ export async function runOptionStrategy(market: MarketData, base: SessionConfig,
       for (const l of g.legs) {
         // как и биржа: расчёт на свече, внутри которой наступила экспирация (после неё now > expiry)
         if (!l.open || l.type === 'F' || l.expiry >= ex.now) continue;
-        const S = settlementPrice(l.expiry);
+        const S = settlementPrice(g.underlying, l.expiry);
         const payoff = l.type === 'C' ? Math.max(0, S - l.strike) : Math.max(0, l.strike - S);
         l.exit = payoff;
         l.exitTime = l.expiry;
@@ -723,7 +789,7 @@ export async function runOptionStrategy(market: MarketData, base: SessionConfig,
   };
 
   const closeGroup = (g: OsTrade, reason: OsExitReason) => {
-    const S = ex.price(s.underlying);
+    const S = ex.price(g.underlying);
     // сначала выкупаем проданные ноги (освобождаем маржу), затем продаём купленные
     const legs = [...g.legs].sort((a, b) => Number(a.side === 'Buy') - Number(b.side === 'Buy'));
     for (const l of legs) {
@@ -737,16 +803,24 @@ export async function runOptionStrategy(market: MarketData, base: SessionConfig,
         l.open = false;
       } else if (l.type !== 'F' && l.side === 'Buy') {
         // купленный опцион без покупателей (bid = 0) — остаётся до экспирации и рассчитается по ней
-        say(`${l.symbol}: нет покупателей — нога останется до экспирации`);
-      } else say(`${l.symbol}: не удалось закрыть (${o.rejectReason ?? o.status})`);
+        say(`${l.symbol}: нет покупателей — нога останется до экспирации`, g.underlying);
+      } else say(`${l.symbol}: не удалось закрыть (${o.rejectReason ?? o.status})`, g.underlying);
     }
     if (!g.reason || g.reason === 'expiry') g.reason = reason;
     g.S1 = S;
     g.closeTime = ex.now;
   };
 
-  /** Активные конструкции (ещё не получили сигнал на выход). */
-  const active = () => open.filter((g) => !g.reason);
+  /**
+   * Конструкция «уже рассчитывается»: все её открытые опционы экспирируются на ближайшей свече (момент расчёта
+   * наступил) — решений по ней больше нет, закрыть по рынку нельзя, и лимит открытых она не занимает.
+   */
+  const settling = (g: OsTrade) => {
+    const opts = g.legs.filter((l) => l.open && l.type !== 'F');
+    return opts.length > 0 && opts.every((l) => ex.settleTime(l.expiry) <= ex.now);
+  };
+  /** Активные конструкции (ещё не получили сигнал на выход и не рассчитываются). */
+  const active = (u?: string) => open.filter((g) => !g.reason && !settling(g) && (!u || g.underlying === u));
 
   /** Перенести полностью закрытые конструкции в список сделок. */
   const sweep = () => {
@@ -759,14 +833,14 @@ export async function runOptionStrategy(market: MarketData, base: SessionConfig,
       finalize(g);
       open.splice(i, 1);
       trades.push(g);
-      say(`Закрыт #${g.id} ${st.short}: ${OS_REASON_LABEL[g.reason]}, PnL ${fmt(g.pnl)} USDT`);
+      say(`Закрыт #${g.id} ${st.short}: ${OS_REASON_LABEL[g.reason]}, PnL ${fmt(g.pnl)} USDT`, g.underlying);
     }
   };
 
-  const ivHistory = (T: number, days: number): number[] => {
+  const ivHistory = (u: string, T: number, days: number): number[] => {
     const out: number[] = [];
     for (let k = 1; k <= days; k++) {
-      const vi = ex.volInputs(s.underlying, ex.now - k * DAY);
+      const vi = ex.volInputs(u, ex.now - k * DAY);
       if (vi.rv7 == null && vi.rv30 == null && vi.dvol == null) continue; // до начала истории
       const v = atmIv(config.options, vi, T);
       if (Number.isFinite(v) && v > 0) out.push(v);
@@ -774,20 +848,20 @@ export async function runOptionStrategy(market: MarketData, base: SessionConfig,
     return out;
   };
 
-  const sma = (n: number): number | null => {
+  const sma = (u: string, n: number): number | null => {
     let sum = 0;
     for (let k = 0; k < n; k++) {
-      const c = market.closeAt(s.underlying, ex.now - k * DAY);
+      const c = market.closeAt(u, ex.now - k * DAY);
       if (c === undefined) return null;
       sum += c;
     }
     return sum / n;
   };
 
-  const isEntrySlot = () => {
+  const isEntrySlot = (a: AssetState) => {
     const now = ex.now;
     const day = Math.floor((now - 1) / DAY);
-    if (day === lastEntryDay) return false;
+    if (day === a.lastEntryDay) return false;
     const dow = new Date(day * DAY).getUTCDay();
     if (s.schedule === 'weekdays' && (dow === 0 || dow === 6)) return false;
     if (s.schedule === 'weekly' && dow !== s.weekday) return false;
@@ -799,36 +873,74 @@ export async function runOptionStrategy(market: MarketData, base: SessionConfig,
     return true;
   };
 
-  const tryEnter = () => {
-    if (!isEntrySlot()) return;
+  /** Денежный поток сделки по ноге: покупка — минус, продажа — плюс. */
+  const flow = (side: Side, price: number, qty: number) => (side === 'Buy' ? -1 : 1) * price * qty;
+
+  /**
+   * Вход: сначала покупки (премия), затем продажи (маржа). Если биржа отклоняет ногу — уже исполненные
+   * закрываются по рынку; потери на этом откате учитываются отдельно, а ноги, которые закрыть нельзя
+   * (купленный опцион без покупателей), остаются отдельной «конструкцией» до экспирации.
+   */
+  const enter = (a: AssetState, legs: ResolvedLeg[]): { fills: { leg: ResolvedLeg; avg: number; qty: number; fee: number }[] } | { error: string } => {
+    const order = [...legs].sort((x, y) => Number(x.side === 'Sell') - Number(y.side === 'Sell'));
+    const done: { leg: ResolvedLeg; avg: number; qty: number; fee: number }[] = [];
+    for (const l of order) {
+      const o = ex.placeOrder({ category: l.category, symbol: l.symbol, side: l.side, orderType: 'Market', qty: l.qty, tag: 'opt-strategy' });
+      if (o.status === 'Filled' && o.filledQty > 0) {
+        done.push({ leg: l, avg: o.avgPrice, qty: o.filledQty, fee: o.cumFee });
+        continue;
+      }
+      // откат
+      stats.failedEntries.n++;
+      const orphans: OsLeg[] = [];
+      for (const d of done.reverse()) {
+        const back: Side = d.leg.side === 'Buy' ? 'Sell' : 'Buy';
+        const c = ex.placeOrder({ category: d.leg.category, symbol: d.leg.symbol, side: back, orderType: 'Market', qty: d.qty, tag: 'opt-strategy' });
+        if (c.status === 'Filled' && c.filledQty > 0) {
+          stats.failedEntries.cost += flow(d.leg.side, d.avg, d.qty) + flow(back, c.avgPrice, c.filledQty) - d.fee - c.cumFee;
+        } else {
+          orphans.push({ symbol: d.leg.symbol, side: d.leg.side, type: d.leg.type, strike: d.leg.strike, expiry: d.leg.expiry, qty: d.qty, entry: d.avg, entryIv: 0, entryDelta: 0, fees: d.fee, open: true });
+        }
+      }
+      if (orphans.length) {
+        open.push({ id: ++seq, underlying: a.u, structure: s.structure, openTime: ex.now, closeTime: ex.now, expiry: orphans[0].expiry, S0: ex.price(a.u), qty: orphans[0].qty, legs: orphans, premium: orphans.reduce((x, l) => x + flow(l.side, l.entry, l.qty), 0), maxLoss: NaN, maxProfit: NaN, breakevens: [], atmIv: 0, ivRank: null, fees: 0, pnl: 0, reason: 'rejected', mae: 0 });
+      }
+      return { error: `${l.symbol}: ${o.rejectReason ?? o.status}` };
+    }
+    done.sort((x, y) => legs.indexOf(x.leg) - legs.indexOf(y.leg));
+    return { fills: done };
+  };
+
+  const tryEnter = (a: AssetState) => {
+    if (!isEntrySlot(a)) return;
     const day = Math.floor((ex.now - 1) / DAY);
-    if (active().length >= s.maxOpen) {
+    if (active(a.u).length >= s.maxOpen) {
       // лимит занят — пробуем снова на следующих свечах этого дня (например, сразу после экспирации)
-      if (lastMaxOpenDay !== day) stats.skips.maxOpen++;
-      lastMaxOpenDay = day;
+      if (a.lastMaxOpenDay !== day) stats.skips.maxOpen++;
+      a.lastMaxOpenDay = day;
       return;
     }
-    lastEntryDay = day;
-    const pick = pickLegs(ex, s, 1);
+    a.lastEntryDay = day;
+    const pick = pickLegs(ex, s, 1, a.u);
     if (pick.error) {
       stats.skips.chain++;
-      say(`Пропуск входа: ${pick.error}`);
+      say(`Пропуск входа: ${pick.error}`, a.u);
       return;
     }
     const ivPct = pick.atmIv * 100;
     if ((s.ivMin > 0 && ivPct < s.ivMin) || (s.ivMax > 0 && ivPct > s.ivMax)) {
       stats.skips.iv++;
-      say(`Пропуск: IV ${fmt(ivPct, 1)}% вне диапазона`);
+      say(`Пропуск: IV ${fmt(ivPct, 1)}% вне диапазона`, a.u);
       return;
     }
     let ivRank: number | null = null;
     if (s.ivRankMin > 0 || s.ivRankMax < 100) {
-      const T = yearsTo(pick.expiry, ex.now);
+      const T = ex.optionT(a.u, pick.expiry);
       const days = Math.max(5, Math.round(s.ivRankDays));
-      const hist = ivHistory(T, days);
+      const hist = ivHistory(a.u, T, days);
       if (hist.length < Math.min(20, days * 0.5)) {
         stats.skips.ivRank++;
-        say(`Пропуск: мало истории для IV-ранга (${hist.length} из ${days} дн.)`);
+        say(`Пропуск: мало истории для IV-ранга (${hist.length} из ${days} дн.)`, a.u);
         return;
       }
       const lo = Math.min(...hist, pick.atmIv);
@@ -836,41 +948,50 @@ export async function runOptionStrategy(market: MarketData, base: SessionConfig,
       ivRank = hi - lo > 1e-9 ? ((pick.atmIv - lo) / (hi - lo)) * 100 : 50;
       if (ivRank < s.ivRankMin || ivRank > s.ivRankMax) {
         stats.skips.ivRank++;
-        say(`Пропуск: IV-ранг ${fmt(ivRank, 0)}% вне диапазона`);
+        say(`Пропуск: IV-ранг ${fmt(ivRank, 0)}% вне диапазона`, a.u);
         return;
       }
     }
     if (s.trend !== 'off') {
-      const m = sma(Math.max(2, Math.round(s.trendSma)));
+      const m = sma(a.u, Math.max(2, Math.round(s.trendSma)));
       const S = pick.S;
       if (m === null || (s.trend === 'above' && S <= m) || (s.trend === 'below' && S >= m)) {
         stats.skips.trend++;
-        say(m === null ? `Пропуск: мало истории для SMA ${Math.round(s.trendSma)}` : `Пропуск: тренд-фильтр (цена ${fmt(S)}, SMA ${fmt(m)})`);
+        say(m === null ? `Пропуск: мало истории для SMA ${Math.round(s.trendSma)}` : `Пропуск: тренд-фильтр (цена ${fmt(S)}, SMA ${fmt(m)})`, a.u);
         return;
       }
     }
     const eco = unitEconomics(ex, pick.legs, pick.S);
-    const size = sizeFor(ex, s, eco, pick.S);
+    const size = sizeFor(ex, s, eco, pick.S, undefined, a.u);
     if (size.error) {
       stats.skips.size++;
-      say(`Пропуск: ${size.error}`);
+      say(`Пропуск: ${size.error}`, a.u);
+      return;
+    }
+    // хватает ли средств на премию покупок и маржу продаж (с запасом) — иначе не трогаем рынок вовсе
+    const need = eco.margin * size.qty * 1.02;
+    const avail = ex.available(ex.main);
+    if (need > avail) {
+      stats.skips.funds++;
+      say(`Пропуск: не хватает средств — нужно ${fmt(need)} USDT, доступно ${fmt(Math.max(0, avail))}`, a.u);
       return;
     }
     const legs = scaleLegs(pick.legs, size.qty);
-    const res = openStrategy(ex, legs, 'opt-strategy');
-    if (!res.ok) {
+    const res = enter(a, legs);
+    if ('error' in res) {
       stats.skips.rejected++;
-      say(`Вход отклонён: ${res.error}`);
+      say(`Вход отклонён: ${res.error}`, a.u);
       return;
     }
     const g: OsTrade = {
       id: ++seq,
+      underlying: a.u,
       structure: s.structure,
       openTime: ex.now,
       expiry: pick.expiry,
       S0: pick.S,
       qty: size.qty,
-      legs: res.fills.map(({ leg, order }) => {
+      legs: res.fills.map(({ leg, avg, qty, fee }) => {
         const q = leg.type === 'F' ? null : ex.optionQuote(leg.symbol);
         return {
           symbol: leg.symbol,
@@ -878,11 +999,11 @@ export async function runOptionStrategy(market: MarketData, base: SessionConfig,
           type: leg.type,
           strike: leg.strike,
           expiry: leg.expiry,
-          qty: order.filledQty,
-          entry: order.avgPrice,
+          qty,
+          entry: avg,
           entryIv: q?.iv ?? 0,
           entryDelta: leg.qty > 0 ? leg.delta / leg.qty : 0,
-          fees: order.cumFee,
+          fees: fee,
           open: true,
         };
       }),
@@ -896,7 +1017,7 @@ export async function runOptionStrategy(market: MarketData, base: SessionConfig,
       pnl: 0,
       mae: 0,
     };
-    g.premium = g.legs.filter((l) => l.type !== 'F').reduce((a, l) => a + (l.side === 'Sell' ? 1 : -1) * l.entry * l.qty, 0);
+    g.premium = g.legs.filter((l) => l.type !== 'F').reduce((x, l) => x + flow(l.side, l.entry, l.qty), 0);
     open.push(g);
     const strikes = g.legs
       .filter((l) => l.type !== 'F')
@@ -905,20 +1026,21 @@ export async function runOptionStrategy(market: MarketData, base: SessionConfig,
     say(
       `Открыт #${g.id} ${st.name} ×${size.qty}: ${strikes}, эксп. ${new Date(pick.expiry).toISOString().slice(0, 10)}, ` +
         `${g.premium >= 0 ? 'кредит' : 'дебет'} ${fmt(Math.abs(g.premium))} USDT, IV ${fmt(ivPct, 1)}%`,
+      a.u,
     );
   };
 
   const checkExits = () => {
-    const S = ex.price(s.underlying);
     for (const g of open) {
-      if (g.reason) continue;
+      if (g.reason || settling(g)) continue;
+      const S = ex.price(g.underlying);
       const pnl = groupPnl(g, S);
       g.mae = Math.min(g.mae, pnl);
       const prem = Math.abs(g.premium);
       let reason: OsExitReason | null = null;
-      if (s.closeDte > 0 && (g.expiry - ex.now) / DAY <= s.closeDte + 1e-9) reason = 'dte';
-      else if (s.tpPct > 0 && prem > 0 && pnl >= (prem * s.tpPct) / 100) reason = 'tp';
-      else if (s.slPct > 0 && prem > 0 && pnl <= (-prem * s.slPct) / 100) reason = 'sl';
+      if (s.closeDte > 0 && (ex.settleTime(g.expiry) - ex.now) / DAY <= s.closeDte + 1e-9) reason = 'dte';
+      else if (s.useTp && s.tpPct > 0 && prem > 0 && pnl >= (prem * s.tpPct) / 100) reason = 'tp';
+      else if (s.useSl && s.slPct > 0 && prem > 0 && pnl <= (-prem * s.slPct) / 100) reason = 'sl';
       else if (s.breachExit && g.legs.some((l) => l.open && l.type !== 'F' && l.side === 'Sell' && (l.type === 'P' ? S < l.strike : S > l.strike))) reason = 'breach';
       else if (
         s.deltaExit > 0 &&
@@ -929,43 +1051,43 @@ export async function runOptionStrategy(market: MarketData, base: SessionConfig,
     }
   };
 
-  const hedgeNow = (force = false) => {
+  const hedgeNow = (a: AssetState, force = false) => {
     if (!s.hedge) return;
-    const perp = ex.main.positions[s.underlying];
+    const perp = ex.main.positions[a.u];
     const perpSize = perp?.size ?? 0;
-    const optQty = active().reduce((a, g) => a + g.qty, 0);
+    const optQty = active(a.u).reduce((x, g) => x + g.qty, 0);
     if (optQty <= 0) {
       if (perpSize !== 0) {
-        const o = ex.closePosition(MAIN, s.underlying);
+        const o = ex.closePosition(MAIN, a.u);
         if (o?.status === 'Filled') {
           stats.hedge.trades++;
-          hedgeFills.push({ t: ex.now, side: o.side, qty: o.filledQty, price: o.avgPrice });
+          hedgeFills.push({ t: ex.now, underlying: a.u, side: o.side, qty: o.filledQty, price: o.avgPrice });
         }
       }
       return;
     }
-    if (!force && ex.now - lastHedge < s.hedgeHours * HOUR) return;
-    const S = ex.price(s.underlying);
+    if (!force && ex.now - a.lastHedge < s.hedgeHours * HOUR) return;
+    const S = ex.price(a.u);
     let delta = 0;
     for (const p of Object.values(ex.main.positions)) {
-      if (p.category !== 'option') continue;
+      if (p.category !== 'option' || ex.optionInstrument(p.symbol)?.underlying !== a.u) continue;
       delta += (ex.optionQuote(p.symbol, S)?.greeks.delta ?? 0) * p.size;
     }
     const net = delta + perpSize;
     if (Math.abs(net) <= s.hedgeBand * optQty) return;
-    const trade = roundToStep(-net, spec.qtyStep, 'round');
-    if (Math.abs(trade) < spec.minQty) return;
-    const o = ex.placeOrder({ category: 'linear', symbol: s.underlying, side: trade > 0 ? 'Buy' : 'Sell', orderType: 'Market', qty: Math.abs(trade), tag: 'opt-hedge' });
-    lastHedge = ex.now;
+    const trade = roundToStep(-net, a.qtyStep, 'round');
+    if (Math.abs(trade) < a.minQty) return;
+    const o = ex.placeOrder({ category: 'linear', symbol: a.u, side: trade > 0 ? 'Buy' : 'Sell', orderType: 'Market', qty: Math.abs(trade), tag: 'opt-hedge' });
+    a.lastHedge = ex.now;
     if (o.status === 'Filled') {
       stats.hedge.trades++;
-      hedgeFills.push({ t: ex.now, side: o.side, qty: o.filledQty, price: o.avgPrice });
-    } else say(`Хедж отклонён: ${o.rejectReason ?? o.status}`);
+      hedgeFills.push({ t: ex.now, underlying: a.u, side: o.side, qty: o.filledQty, price: o.avgPrice });
+    } else say(`Хедж отклонён: ${o.rejectReason ?? o.status}`, a.u);
   };
 
   const onLiquidation = () => {
-    const S = ex.price(s.underlying);
     for (const g of open) {
+      const S = ex.price(g.underlying);
       for (const l of g.legs) {
         if (!l.open) continue;
         l.exit = legMark(l, S);
@@ -992,8 +1114,8 @@ export async function runOptionStrategy(market: MarketData, base: SessionConfig,
       if (!halted) {
         checkExits();
         sweep();
-        tryEnter();
-        hedgeNow();
+        for (const a of assets) tryEnter(a);
+        for (const a of assets) hedgeNow(a);
       } else sweep();
       if (performance.now() - sliceStart > slice) {
         opts.onProgress?.(ex.state.cursor / Math.max(1, total));
@@ -1003,14 +1125,16 @@ export async function runOptionStrategy(market: MarketData, base: SessionConfig,
       }
     }
     for (const g of open) if (!g.reason) closeGroup(g, 'end');
-    hedgeNow(true);
-    if (ex.main.positions[s.underlying]?.size) ex.closePosition(MAIN, s.underlying);
+    for (const a of assets) {
+      hedgeNow(a, true);
+      if (ex.main.positions[a.u]?.size) ex.closePosition(MAIN, a.u);
+    }
     sweep();
     while (!ex.state.finished) ex.step();
     settleLegs();
     // «брошенные» ноги, которые не успели экспирироваться к концу данных, — по mark
     for (const g of open) {
-      const S = ex.price(s.underlying);
+      const S = ex.price(g.underlying);
       for (const l of g.legs) if (l.open) Object.assign(l, { exit: legMark(l, S), exitTime: ex.now, open: false });
       g.reason ??= 'end';
     }
@@ -1019,8 +1143,26 @@ export async function runOptionStrategy(market: MarketData, base: SessionConfig,
     return fail(`Ошибка на ${new Date(ex.now).toISOString()}: ${e?.message || e}`);
   }
 
+  // хедж и сверка книг: всё, что изменило капитал, должно быть видно в отчёте
+  const hedgeRecs = ex.state.closedPnl.filter((c) => c.accountId === MAIN && c.category === 'linear' && unders.includes(c.symbol) && s.hedge);
+  stats.hedge.pnl = hedgeRecs.reduce((x, c) => x + c.closedPnl, 0);
+  stats.hedge.fees = hedgeRecs.reduce((x, c) => x + c.openFee + c.closeFee, 0);
+  stats.hedge.funding = hedgeRecs.reduce((x, c) => x + c.funding, 0);
+  const equity = ex.state.equity.map((p) => ({ t: p.t, v: p.main }));
+  const ledger = trades.reduce((x, g) => x + g.pnl, 0) + stats.hedge.pnl + stats.failedEntries.cost;
+  const actual = (equity[equity.length - 1]?.v ?? s.initialBalance) - s.initialBalance;
+  const residual = actual - ledger;
+  // ликвидация: списания в страховой фонд и закрытие по mark — относим к ликвидированным конструкциям
+  const liq = trades.filter((g) => g.reason === 'liquidation');
+  if (liq.length && Math.abs(residual) > 0.01) {
+    for (const g of liq) {
+      g.liqAdj = residual / liq.length;
+      g.pnl += g.liqAdj;
+    }
+  } else stats.other = residual;
+
   // статистика
-  trades.sort((a, b) => a.openTime - b.openTime);
+  trades.sort((x, y) => x.openTime - y.openTime);
   const n = trades.length;
   stats.trades = n;
   for (const g of trades) {
@@ -1035,30 +1177,44 @@ export async function runOptionStrategy(market: MarketData, base: SessionConfig,
     const b = (stats.byReason[r] ??= { n: 0, pnl: 0 });
     b.n++;
     b.pnl += g.pnl;
+    const as = (stats.byAsset[g.underlying] ??= { trades: 0, wins: 0, pnl: 0, premiumIn: 0, premiumOut: 0 });
+    as.trades++;
+    if (g.pnl > 0) as.wins++;
+    as.pnl += g.pnl;
+    if (g.premium >= 0) as.premiumIn += g.premium;
+    else as.premiumOut -= g.premium;
     stats.bestTrade = Math.max(stats.bestTrade, g.pnl);
     stats.worstTrade = Math.min(stats.worstTrade, g.pnl);
   }
+  for (const u of unders) stats.byAsset[u] ??= { trades: 0, wins: 0, pnl: 0, premiumIn: 0, premiumOut: 0 };
   if (n) {
     stats.winRate = stats.wins / n;
     stats.avgPnl = stats.pnl / n;
     stats.avgDays /= n;
     stats.avgIv /= n;
   }
-  const hedgeRecs = ex.state.closedPnl.filter((c) => c.accountId === MAIN && c.category === 'linear' && c.symbol === s.underlying);
-  if (s.hedge) {
-    stats.hedge.pnl = hedgeRecs.reduce((a, c) => a + c.closedPnl, 0);
-    stats.hedge.fees = hedgeRecs.reduce((a, c) => a + c.openFee + c.closeFee, 0);
-    stats.hedge.funding = hedgeRecs.reduce((a, c) => a + c.funding, 0);
-  }
 
-  const equity = ex.state.equity.map((p) => ({ t: p.t, v: p.main }));
-  const bench = ex.state.equity.map((p) => ({ t: p.t, v: p.bench }));
+  // бенчмарк: один актив — его цена; несколько — равновесная корзина (сумма долей от стартовых цен)
+  const p0 = unders.map((u) => market.closeAt(u, market.start) ?? NaN);
+  const bench = ex.state.equity.map((p) => {
+    if (unders.length === 1) return { t: p.t, v: p.bench };
+    let sum = 0;
+    let k = 0;
+    unders.forEach((u, i) => {
+      const c = market.closeAt(u, p.t);
+      if (c !== undefined && p0[i] > 0) {
+        sum += c / p0[i];
+        k++;
+      }
+    });
+    return { t: p.t, v: k ? (sum / k) * 100 : NaN };
+  });
   // для отчёта сделка = конструкция целиком
   const recs: ClosedPnlRecord[] = trades.map((g) => ({
     id: `os${g.id}`,
     accountId: MAIN,
     category: 'option',
-    symbol: st.short,
+    symbol: `${st.short} ${g.underlying.replace(/USDT$/, '')}`,
     side: g.premium >= 0 ? 'Sell' : 'Buy',
     qty: g.qty,
     entryPrice: g.S0,
@@ -1080,6 +1236,7 @@ export async function runOptionStrategy(market: MarketData, base: SessionConfig,
     report,
     equity,
     bench,
+    benchLabel,
     trades,
     stats,
     log,
@@ -1092,13 +1249,14 @@ export async function runOptionStrategy(market: MarketData, base: SessionConfig,
 
 /* ───────────────────────── Перебор одного параметра ───────────────────────── */
 
-export type OsSweepParam = 'delta' | 'dte' | 'tpPct' | 'slPct' | 'wingPct' | 'closeDte' | 'riskPct' | 'entryHour' | 'deltaExit' | 'hedgeBand';
+export type OsSweepParam = 'delta' | 'dte' | 'tpPct' | 'slPct' | 'wingPct' | 'closeDte' | 'riskPct' | 'entryHour' | 'deltaExit' | 'hedgeBand' | 'weekday';
 
 export const OS_SWEEP_PARAMS: { key: OsSweepParam; label: string; from: number; to: number; step: number }[] = [
   { key: 'delta', label: 'Дельта ног', from: 0.05, to: 0.35, step: 0.05 },
   { key: 'dte', label: 'Дней до экспирации', from: 1, to: 30, step: 7 },
-  { key: 'tpPct', label: 'Тейк-профит, %', from: 0, to: 100, step: 25 },
-  { key: 'slPct', label: 'Стоп-лосс, %', from: 0, to: 300, step: 50 },
+  { key: 'weekday', label: 'День входа (0 — вс … 6 — сб)', from: 0, to: 6, step: 1 },
+  { key: 'tpPct', label: 'Тейк-профит, % (включает тейк)', from: 25, to: 100, step: 25 },
+  { key: 'slPct', label: 'Стоп-лосс, % (включает стоп)', from: 50, to: 300, step: 50 },
   { key: 'wingPct', label: 'Ширина крыла, %', from: 2, to: 10, step: 2 },
   { key: 'closeDte', label: 'Закрыть за N дней', from: 0, to: 5, step: 1 },
   { key: 'riskPct', label: 'Риск на сделку, %', from: 1, to: 10, step: 1 },
@@ -1121,6 +1279,15 @@ export function sweepValues(from: number, to: number, step: number, limit = 40):
   return out;
 }
 
+/** Настройки с одним изменённым параметром (тейк и стоп при переборе включаются). */
+export function withParam(s: OsSettings, param: OsSweepParam, v: number): OsSettings {
+  const next: OsSettings = { ...s, [param]: v };
+  if (param === 'tpPct') next.useTp = v > 0;
+  if (param === 'slPct') next.useSl = v > 0;
+  if (param === 'weekday') next.schedule = 'weekly';
+  return next;
+}
+
 export async function runOptionSweep(
   market: MarketData,
   base: SessionConfig,
@@ -1132,7 +1299,7 @@ export async function runOptionSweep(
   const rows: OsSweepRow[] = [];
   for (const v of values) {
     if (opts.signal?.aborted) break;
-    const r = await runOptionStrategy(market, base, { ...s, [param]: v }, { noLog: true, signal: opts.signal, sliceMs: 40 });
+    const r = await runOptionStrategy(market, base, withParam(s, param, v), { noLog: true, signal: opts.signal, sliceMs: 40 });
     const row: OsSweepRow = { value: v, report: r.report, stats: r.stats, error: r.ok ? undefined : r.error };
     rows.push(row);
     opts.onRow?.(row, rows.length, values.length);
@@ -1140,14 +1307,13 @@ export async function runOptionSweep(
   return rows;
 }
 
-/** Предпросмотр: какие ноги стратегия открыла бы прямо сейчас на бирже сессии. */
-export function previewEntry(ex: Exchange, s: OsSettings) {
-  const pick = pickLegs(ex, s, 1);
+/** Предпросмотр: какие ноги стратегия открыла бы прямо сейчас на бирже сессии по одному из активов. */
+export function previewEntry(ex: Exchange, s: OsSettings, underlying = s.underlyings[0]) {
+  const pick = pickLegs(ex, s, 1, underlying);
   if (pick.error) return { error: pick.error, pick };
   const eco = unitEconomics(ex, pick.legs, pick.S);
   // объём — от депозита стратегии, а не от счёта ручной сессии
-  const size = sizeFor(ex, s, eco, pick.S, { equity: s.initialBalance, available: s.initialBalance });
+  const size = sizeFor(ex, s, eco, pick.S, { equity: s.initialBalance, available: s.initialBalance }, underlying);
   const legs = size.qty > 0 ? scaleLegs(pick.legs, size.qty) : pick.legs;
   return { pick, eco, size, legs, error: undefined as string | undefined };
 }
-

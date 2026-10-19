@@ -18,6 +18,7 @@ import {
   usesDelta,
   usesWing,
   validateSettings,
+  withParam,
   type OsExitReason,
   type OsResult,
   type OsSettings,
@@ -64,12 +65,15 @@ function writeJson(key: string, v: unknown) {
 
 /** Настройки из localStorage, приведённые к текущей сессии (актив, депозит). */
 function loadSettings(unders: string[], fallbackSymbol: string, balance: number): OsSettings {
-  const stored = readJson<Partial<OsSettings>>(SETTINGS_KEY, {});
+  const stored = readJson<Partial<OsSettings> & { underlying?: string }>(SETTINGS_KEY, {});
   const clean: Partial<OsSettings> = {};
   for (const [k, v] of Object.entries(stored)) if (k in DEFAULT_OS && typeof v === typeof (DEFAULT_OS as any)[k]) (clean as any)[k] = v;
   if (clean.structure && !OS_BY_KEY[clean.structure]) delete clean.structure;
-  const underlying = stored.underlying && unders.includes(stored.underlying) ? stored.underlying : (unders[0] ?? fallbackSymbol);
-  return { ...DEFAULT_OS, ...clean, underlying, initialBalance: balance };
+  // раньше хранился один актив (underlying) — переносим в список
+  const wanted = Array.isArray(stored.underlyings) ? stored.underlyings : stored.underlying ? [stored.underlying] : [];
+  const kept = wanted.filter((u) => unders.includes(u));
+  const underlyings = kept.length ? kept : [unders[0] ?? fallbackSymbol];
+  return { ...DEFAULT_OS, ...clean, underlyings, initialBalance: balance };
 }
 
 /* ───────────────────────── мелкие элементы ───────────────────────── */
@@ -225,13 +229,22 @@ export function OptionStrategyPanel() {
   }, [s, auto]);
   useEffect(() => () => void (abortRef.current.aborted = true), []);
 
-  const applyPreset = (p: Partial<OsSettings>) => setS((cur) => ({ ...cur, ...DEFAULT_OS, ...p, underlying: cur.underlying, initialBalance: cur.initialBalance }));
+  const applyPreset = (p: Partial<OsSettings>) => setS((cur) => ({ ...cur, ...DEFAULT_OS, ...p, underlyings: cur.underlyings, initialBalance: cur.initialBalance }));
+  const toggleUnder = (u: string) =>
+    setS((cur) => {
+      const has = cur.underlyings.includes(u);
+      if (has && cur.underlyings.length === 1) return cur; // хотя бы один актив
+      return { ...cur, underlyings: has ? cur.underlyings.filter((x) => x !== u) : unders.filter((x) => x === u || cur.underlyings.includes(x)) };
+    });
+  // актив для предпросмотра и графика (из выбранных)
+  const [focusU, setFocusU] = useState<string>('');
+  const viewU = s.underlyings.includes(focusU) ? focusU : s.underlyings[0];
 
   /* ── предпросмотр входа на текущий момент сессии ── */
   const preview = useMemo(() => {
     if (noOptions || err) return null;
     try {
-      const pv = previewEntry(ex, s);
+      const pv = previewEntry(ex, s, viewU);
       if (pv.error || !pv.legs) return { error: pv.error ?? 'Нет данных' };
       const econ = strategyEconomics(ex, pv.legs, pv.pick.expiry, pv.pick.S);
       return { ...pv, econ };
@@ -240,7 +253,7 @@ export function OptionStrategyPanel() {
     }
     // v — перерисовка при движении сессии
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ex, s, v, err, noOptions]);
+  }, [ex, s, v, err, noOptions, viewU]);
 
   /* ── перебор параметра ── */
   const [sweepParam, setSweepParam] = usePersistent<OsSweepParam>('bt-os-sweep', 'delta', OS_SWEEP_PARAMS.map((p) => p.key));
@@ -278,7 +291,7 @@ export function OptionStrategyPanel() {
       </div>
     );
 
-  const spec = getAsset(s.underlying);
+  const spec = getAsset(viewU);
   const r = result?.ok ? result : null;
   const views: OsStructure['view'][] = ['neutral', 'bull', 'bear', 'vol'];
 
@@ -331,7 +344,7 @@ export function OptionStrategyPanel() {
             onClick={() => {
               const name = prompt('Название набора настроек:');
               if (!name) return;
-              const { underlying: _u, initialBalance: _b, ...rest } = s;
+              const { underlyings: _u, initialBalance: _b, ...rest } = s;
               const next = { ...userPresets, [name]: rest };
               setUserPresets(next);
               writeJson(USER_PRESETS_KEY, next);
@@ -344,10 +357,22 @@ export function OptionStrategyPanel() {
 
         <div className="flex-1 min-h-0 overflow-y-auto">
           <Section id="struct" title="Актив и конструкция" open={!!sections.struct} onToggle={toggleSection} note={st.name}>
-            <div className="grid grid-cols-2 gap-2">
-              <Select label="Базовый актив" value={s.underlying} onChange={(x) => set('underlying', x)} options={unders.map((u) => ({ value: u, label: u.replace(/USDT$/, '') }))} />
-              <NumInput label="Депозит" value={s.initialBalance} onChange={(x) => set('initialBalance', x === '' ? 0 : x)} suffix="USDT" />
+            <div className="flex flex-col gap-1">
+              <div className="text-[11px] text-muted flex items-center">
+                Базовые активы
+                <Help text="Можно выбрать несколько: по каждому активу стратегия открывает свои конструкции по тем же правилам, счёт и маржа — общие. Размер позиции и лимит открытых — на каждый актив." />
+                <span className="ml-auto text-dim">{s.underlyings.length > 1 ? `выбрано ${s.underlyings.length}` : ''}</span>
+              </div>
+              <div className="flex flex-wrap gap-1" data-testid="os-assets">
+                {unders.map((u) => (
+                  <button key={u} type="button" className={cx('chip border border-line2 !h-6 !text-[11px]', s.underlyings.includes(u) && 'active')} onClick={() => toggleUnder(u)}>
+                    {s.underlyings.includes(u) ? '✓ ' : ''}
+                    {u.replace(/USDT$/, '')}
+                  </button>
+                ))}
+              </div>
             </div>
+            <NumInput label="Депозит" value={s.initialBalance} onChange={(x) => set('initialBalance', x === '' ? 0 : x)} suffix="USDT" />
             {views.map((view) => (
               <div key={view} className="flex flex-col gap-1">
                 <div className={cx('text-[10px] uppercase tracking-wide', VIEW_COLOR[view])}>{VIEW_LABEL[view]}</div>
@@ -399,7 +424,22 @@ export function OptionStrategyPanel() {
                 )}
               </>
             )}
-            <SliderField label="Дней до экспирации" hint="Берётся ближайшая доступная экспирация: дневные, недельные (пятница), месячные и квартальные." value={s.dte} onChange={(x) => set('dte', x)} min={1} max={90} step={1} suffix="дн." />
+            <SliderField label="Дней до экспирации" hint="Экспирации: дневные (3 ближайших дня), недельные (пятница), месячные и квартальные — в 08:00 UTC." value={s.dte} onChange={(x) => set('dte', x)} min={1} max={90} step={1} suffix="дн." />
+            <div className="flex items-center justify-between text-[11px]">
+              <span className="text-muted flex items-center">
+                Выбор экспирации
+                <Help text="«Не позже N дней» — самая дальняя экспирация, которая наступит не позже чем через N дней: недельная позиция закончится до следующего недельного входа в любой день недели. «Ближайшая к N» — ближайшая по сроку, она может оказаться и дальше N дней (тогда следующий вход при лимите в 1 конструкцию пропускается)." />
+              </span>
+              <Segmented
+                size="sm"
+                value={s.expiryMode}
+                onChange={(x) => set('expiryMode', x)}
+                options={[
+                  { value: 'within', label: 'Не позже N дн.' },
+                  { value: 'nearest', label: 'Ближайшая к N' },
+                ]}
+              />
+            </div>
           </Section>
 
           <Section
@@ -437,7 +477,7 @@ export function OptionStrategyPanel() {
               step={1}
               suffix="ч"
             />
-            <SliderField label="Макс. открытых конструкций" hint="Если лимит занят, вход переносится на ближайшую свечу того же дня, когда место освободится." value={s.maxOpen} onChange={(x) => set('maxOpen', Math.max(1, Math.round(x)))} min={1} max={10} step={1} />
+            <SliderField label="Макс. открытых конструкций на актив" hint="Если лимит занят, вход переносится на ближайшую свечу того же дня, когда место освободится. Конструкция, которая рассчитывается экспирацией на ближайшей свече, лимит уже не занимает." value={s.maxOpen} onChange={(x) => set('maxOpen', Math.max(1, Math.round(x)))} min={1} max={10} step={1} />
           </Section>
 
           <Section
@@ -476,20 +516,25 @@ export function OptionStrategyPanel() {
             title="Выход из позиции"
             open={!!sections.exits}
             onToggle={toggleSection}
-            note={[s.tpPct ? `TP ${s.tpPct}%` : '', s.slPct ? `SL ${s.slPct}%` : '', s.closeDte ? `за ${s.closeDte} дн.` : '', !s.tpPct && !s.slPct && !s.closeDte ? 'до экспирации' : ''].filter(Boolean).join(' · ')}
+            note={
+              [s.useTp ? `TP ${s.tpPct}%` : '', s.useSl ? `SL ${s.slPct}%` : '', s.closeDte ? `за ${s.closeDte} дн.` : '', s.deltaExit ? `Δ ${s.deltaExit}` : '', s.breachExit ? 'пробой' : '']
+                .filter(Boolean)
+                .join(' · ') || 'до экспирации'
+            }
           >
-            <SliderField
-              label="Тейк-профит, % от премии"
-              hint="Закрыть, когда прибыль достигла этой доли от полученной (для дебетовых — уплаченной) премии. Для продажи опционов часто берут 50%. Считается по маркировочной цене на закрытии свечи."
-              value={s.tpPct}
-              onChange={(x) => set('tpPct', x)}
-              min={0}
-              max={300}
-              step={5}
-              suffix="%"
-              off="выкл."
-            />
-            <SliderField label="Стоп-лосс, % от премии" hint="Закрыть, когда убыток достиг этой доли от премии. Для кредитных конструкций — например, 200% (убыток = 2× полученной премии)." value={s.slPct} onChange={(x) => set('slPct', x)} min={0} max={500} step={10} suffix="%" off="выкл." />
+            <div className="text-[11px] text-muted leading-snug">
+              По умолчанию позиции держатся до экспирации. Тейк, стоп и остальные правила ниже — по желанию.
+            </div>
+            <Check checked={s.useTp} onChange={(x) => set('useTp', x)}>
+              <span className="text-[12px]">Тейк-профит</span>
+              <Help text="Закрыть, когда прибыль достигла этой доли от полученной (для дебетовых — уплаченной) премии. Для продажи опционов часто берут 50%. Считается по маркировочной цене на закрытии свечи." />
+            </Check>
+            {s.useTp && <SliderField label="Тейк-профит, % от премии" value={s.tpPct} onChange={(x) => set('tpPct', x)} min={5} max={300} step={5} suffix="%" />}
+            <Check checked={s.useSl} onChange={(x) => set('useSl', x)}>
+              <span className="text-[12px]">Стоп-лосс</span>
+              <Help text="Закрыть, когда убыток достиг этой доли от премии. Для кредитных конструкций — например, 200% (убыток = 2× полученной премии); для купленных опционов — до 100%." />
+            </Check>
+            {s.useSl && <SliderField label="Стоп-лосс, % от премии" value={s.slPct} onChange={(x) => set('slPct', x)} min={10} max={500} step={10} suffix="%" />}
             <SliderField label="Закрыть за N дней до экспирации" hint="0 — держать до экспирации (расчёт по цене в 08:00 UTC)." value={s.closeDte} onChange={(x) => set('closeDte', x)} min={0} max={30} step={0.5} suffix="дн." off="до эксп." />
             <SliderField label="Выход по дельте проданной ноги" hint="Закрыть, если |дельта| любого проданного опциона выросла до этого значения (цена подошла к страйку)." value={s.deltaExit} onChange={(x) => set('deltaExit', x)} min={0} max={0.9} step={0.05} off="выкл." />
             <Check checked={s.breachExit} onChange={(x) => set('breachExit', x)}>
@@ -594,7 +639,17 @@ export function OptionStrategyPanel() {
           }
         />
         <div className={cx('flex-1 min-h-0 overflow-auto transition-opacity', running && tab !== 'preview' && tab !== 'sweep' && 'opacity-60')}>
-          {tab === 'preview' && <PreviewTab preview={preview} s={s} exNow={ex.now} />}
+          {(tab === 'preview' || (tab === 'chart' && r)) && s.underlyings.length > 1 && (
+            <div className="flex items-center gap-1 px-2 pt-2" data-testid="os-asset-view">
+              <span className="text-[11px] text-muted mr-1">{tab === 'preview' ? 'Предпросмотр по активу:' : 'График актива:'}</span>
+              {s.underlyings.map((u) => (
+                <button key={u} type="button" className={cx('chip border border-line2 !h-6 !text-[11px]', viewU === u && 'active')} onClick={() => setFocusU(u)}>
+                  {u.replace(/USDT$/, '')}
+                </button>
+              ))}
+            </div>
+          )}
+          {tab === 'preview' && <PreviewTab preview={preview} u={viewU} exNow={ex.now} />}
           {tab === 'sweep' && (
             <SweepTab
               param={sweepParam}
@@ -610,7 +665,7 @@ export function OptionStrategyPanel() {
               progress={sweepProgress}
               onStart={startSweep}
               onStop={() => (sweepAbort.current.aborted = true)}
-              onApply={(val) => set(sweepParam, val)}
+              onApply={(val) => setS((cur) => withParam(cur, sweepParam, val))}
               current={s[sweepParam] as number}
               disabled={!!err}
             />
@@ -619,8 +674,8 @@ export function OptionStrategyPanel() {
           {tab !== 'preview' && tab !== 'sweep' && result && !result.ok && <div className="p-3 text-down">{result.error}</div>}
           {r && tab === 'overview' && <OverviewTab r={r} />}
           {r && tab === 'chart' && (
-            <div className="h-full p-1">
-              <OptionTradesChart market={ex.market} result={r} focus={focus} />
+            <div className={cx('p-1', s.underlyings.length > 1 ? 'h-[calc(100%-36px)]' : 'h-full')}>
+              <OptionTradesChart market={ex.market} result={r} underlying={r.settings.underlyings.includes(viewU) ? viewU : r.settings.underlyings[0]} focus={focus} />
             </div>
           )}
           {r && tab === 'trades' && (
@@ -629,6 +684,7 @@ export function OptionStrategyPanel() {
               expanded={expanded}
               setExpanded={setExpanded}
               onShow={(g) => {
+                setFocusU(g.underlying);
                 setFocus({ from: g.openTime, to: g.closeTime ?? g.expiry });
                 setTab('chart');
               }}
@@ -671,7 +727,8 @@ function OverviewTab({ r }: { r: OsResult }) {
       ['Тренд-фильтр', stt.skips.trend],
       ['Нет подходящей экспирации/страйка', stt.skips.chain],
       ['Объём меньше минимального', stt.skips.size],
-      ['Отклонено биржей (маржа)', stt.skips.rejected],
+      ['Не хватает средств на премию и маржу', stt.skips.funds],
+      ['Отклонено биржей (вход откатан)', stt.skips.rejected],
     ] as [string, number][]
   ).filter(([, n]) => n > 0);
   return (
@@ -679,7 +736,7 @@ function OverviewTab({ r }: { r: OsResult }) {
       {r.halted && <div className="bg-down/10 text-down rounded px-3 py-2 text-[12px]">⚠ {r.halted}</div>}
       {r.trades.length === 0 && <div className="bg-panel2 text-muted rounded px-3 py-2 text-[12px]">Ни одной сделки — проверьте расписание, фильтры и размер позиции (причины пропусков ниже и в журнале).</div>}
       <div className="grid grid-cols-[repeat(auto-fill,minmax(130px,1fr))] gap-1.5">
-        <Kpi label="Доходность" value={fmtPct(rep.totalReturn)} cls={pnlClass(rep.totalReturn)} sub={rep.benchReturn !== null ? `актив: ${fmtPct(rep.benchReturn)}` : undefined} />
+        <Kpi label="Доходность" value={fmtPct(rep.totalReturn)} cls={pnlClass(rep.totalReturn)} sub={rep.benchReturn !== null ? `${r.settings.underlyings.length > 1 ? 'корзина' : 'актив'}: ${fmtPct(rep.benchReturn)}` : undefined} />
         <Kpi label="PnL" value={`${fmtUsd(rep.pnl, 0, true)}`} cls={pnlClass(rep.pnl)} sub={`CAGR ${fmtPct(rep.cagr, 1)}`} />
         <Kpi label="Макс. просадка" value={fmtPct(-rep.maxDrawdown)} cls="text-down" sub={`${fmtUsd(rep.maxDrawdownAbs, 0)} USDT`} />
         <Kpi label="Шарп / Сортино" value={`${fmtNum(rep.sharpe, 2)} / ${fmtNum(rep.sortino, 2)}`} />
@@ -690,10 +747,44 @@ function OverviewTab({ r }: { r: OsResult }) {
         <Kpi label="Комиссии" value={fmtUsd(rep.fees, 0)} sub={`ср. IV при входе ${fmtPct(stt.avgIv, 1, false)}`} />
         {r.settings.hedge && <Kpi label="Хедж перпетуалом" value={fmtUsd(stt.hedge.pnl, 0, true)} cls={pnlClass(stt.hedge.pnl)} sub={`${stt.hedge.trades} сделок, funding ${fmtUsd(stt.hedge.funding, 0, true)}`} />}
         {stt.expiredItm > 0 && <Kpi label="Экспирации в деньгах" value={stt.expiredItm} sub="проданный опцион с выплатой" />}
+        {stt.failedEntries.n > 0 && <Kpi label="Откаты входов" value={fmtUsd(stt.failedEntries.cost, 0, true)} cls={pnlClass(stt.failedEntries.cost)} sub={`${stt.failedEntries.n} раз биржа отклонила ногу`} />}
+        {Math.abs(stt.other) >= 1 && <Kpi label="Прочее" value={fmtUsd(stt.other, 0, true)} cls={pnlClass(stt.other)} sub="funding перпетуальных ног и т. п." />}
       </div>
       <div className="h-[300px] shrink-0">
-        <EquityChart equity={r.equity} bench={r.bench} benchLabel={`${r.settings.underlying.replace(/USDT$/, '')} buy&hold`} height={300} />
+        <EquityChart equity={r.equity} bench={r.bench} benchLabel={r.benchLabel} height={300} />
       </div>
+      {r.settings.underlyings.length > 1 && (
+        <div className="bg-panel2 rounded-md overflow-hidden">
+          <div className="px-3 py-1.5 text-[12px] font-semibold border-b border-line">По активам</div>
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>Актив</th>
+                <th className="text-right">Конструкций</th>
+                <th className="text-right">Прибыльных</th>
+                <th className="text-right">Премия получена</th>
+                <th className="text-right">Премия уплачена</th>
+                <th className="text-right">PnL</th>
+              </tr>
+            </thead>
+            <tbody>
+              {r.settings.underlyings.map((u) => {
+                const a = stt.byAsset[u] ?? { trades: 0, wins: 0, pnl: 0, premiumIn: 0, premiumOut: 0 };
+                return (
+                  <tr key={u}>
+                    <td>{u.replace(/USDT$/, '')}</td>
+                    <td className="text-right">{a.trades}</td>
+                    <td className="text-right">{a.trades ? fmtPct(a.wins / a.trades, 0, false) : '—'}</td>
+                    <td className="text-right">{fmtUsd(a.premiumIn, 0)}</td>
+                    <td className="text-right">{fmtUsd(a.premiumOut, 0)}</td>
+                    <td className={cx('text-right font-semibold', pnlClass(a.pnl))}>{fmtUsd(a.pnl, 0, true)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-2">
         <div className="bg-panel2 rounded-md overflow-hidden">
           <div className="px-3 py-1.5 text-[12px] font-semibold border-b border-line">Почему закрывались позиции</div>
@@ -747,7 +838,7 @@ function OverviewTab({ r }: { r: OsResult }) {
   );
 }
 
-function PreviewTab({ preview, s, exNow }: { preview: any; s: OsSettings; exNow: number }) {
+function PreviewTab({ preview, u, exNow }: { preview: any; u: string; exNow: number }) {
   if (!preview) return <Empty>Исправьте настройки, чтобы увидеть предпросмотр</Empty>;
   if (preview.error) return <Empty>Сейчас войти нельзя: {preview.error}</Empty>;
   const { pick, eco, size, legs, econ } = preview;
@@ -761,7 +852,7 @@ function PreviewTab({ preview, s, exNow }: { preview: any; s: OsSettings; exNow:
           Так стратегия открыла бы позицию <b className="text-text">в текущий момент сессии</b> ({fmtTime(exNow)}) — без учёта расписания и фильтров. Меняйте настройки слева — предпросмотр обновляется сразу.
         </div>
         <div className="grid grid-cols-[repeat(auto-fill,minmax(120px,1fr))] gap-1.5">
-          <Kpi label="Цена актива" value={fmtPrice(pick.S, s.underlying)} />
+          <Kpi label={`Цена ${u.replace(/USDT$/, '')}`} value={fmtPrice(pick.S, u)} />
           <Kpi label="Экспирация" value={fmtTime(pick.expiry).slice(0, 10)} sub={`через ${fmtNum(dte, 1)} дн.`} />
           <Kpi label="ATM IV" value={fmtPct(pick.atmIv, 1, false)} />
           <Kpi label="Объём" value={qty > 0 ? `${qty}` : '—'} sub={qty > 0 ? 'контрактов на ногу' : size.error} cls={qty > 0 ? '' : 'text-down'} />
@@ -791,7 +882,7 @@ function PreviewTab({ preview, s, exNow }: { preview: any; s: OsSettings; exNow:
                 <td className="text-muted">{l.symbol}</td>
                 <td className="text-right">{l.type === 'F' ? '—' : fmtNum(l.strike, l.strike < 100 ? 2 : 0)}</td>
                 <td className="text-right">{fmtNum(l.qty > 0 ? l.delta / l.qty : 0, 3)}</td>
-                <td className="text-right">{fmtPrice(l.price, s.underlying)}</td>
+                <td className="text-right">{fmtPrice(l.price, u)}</td>
                 <td className="text-right">{l.qty}</td>
               </tr>
             ))}
@@ -807,13 +898,14 @@ function PreviewTab({ preview, s, exNow }: { preview: any; s: OsSettings; exNow:
 
 function TradesTab({ r, expanded, setExpanded, onShow }: { r: OsResult; expanded: number | null; setExpanded: (id: number | null) => void; onShow: (g: OsTrade) => void }) {
   if (!r.trades.length) return <Empty>Стратегия не открыла ни одной позиции</Empty>;
-  const sym = r.settings.underlying;
+  const multi = r.settings.underlyings.length > 1;
   const csv = () =>
     downloadText(
       'option-strategy-trades.csv',
       toCsv(
         r.trades.map((g) => ({
           id: g.id,
+          asset: g.underlying,
           open: new Date(g.openTime).toISOString(),
           close: g.closeTime ? new Date(g.closeTime).toISOString() : '',
           expiry: new Date(g.expiry).toISOString(),
@@ -867,13 +959,14 @@ function TradesTab({ r, expanded, setExpanded, onShow }: { r: OsResult; expanded
                   <div className="text-dim text-[10px]">→ {g.closeTime ? fmtTime(g.closeTime) : '—'}</div>
                 </td>
                 <td>
+                  {multi && <span className="text-[11px] text-brand mr-1.5">{g.underlying.replace(/USDT$/, '')}</span>}
                   <span className="font-mono text-[11px]">{strikesText(g)}</span>
                   <div className="text-dim text-[10px]">эксп. {fmtTime(g.expiry).slice(0, 10)}</div>
                 </td>
                 <td className="text-right">{g.qty}</td>
                 <td className="text-right whitespace-nowrap">
-                  {fmtPrice(g.S0, sym)}
-                  <div className="text-dim text-[10px]">→ {g.S1 !== undefined ? fmtPrice(g.S1, sym) : '—'}</div>
+                  {fmtPrice(g.S0, g.underlying)}
+                  <div className="text-dim text-[10px]">→ {g.S1 !== undefined ? fmtPrice(g.S1, g.underlying) : '—'}</div>
                 </td>
                 <td className="text-right">{fmtPct(g.atmIv, 0, false)}</td>
                 <td className={cx('text-right', g.premium >= 0 ? 'text-up' : 'text-muted')}>{fmtUsd(g.premium, 2, true)}</td>
@@ -921,8 +1014,8 @@ function TradesTab({ r, expanded, setExpanded, onShow }: { r: OsResult; expanded
                             </td>
                             <td className="text-muted">{l.symbol}</td>
                             <td className="text-right">{l.qty}</td>
-                            <td className="text-right">{fmtPrice(l.entry, sym)}</td>
-                            <td className="text-right">{l.exit !== undefined ? fmtPrice(l.exit, sym) : '—'}</td>
+                            <td className="text-right">{fmtPrice(l.entry, g.underlying)}</td>
+                            <td className="text-right">{l.exit !== undefined ? fmtPrice(l.exit, g.underlying) : '—'}</td>
                             <td className="text-right">{l.type === 'F' ? '—' : fmtPct(l.entryIv, 1, false)}</td>
                             <td className="text-right">{fmtNum(l.entryDelta, 3)}</td>
                             <td className="text-right">{fmtUsd(l.fees, 2)}</td>
