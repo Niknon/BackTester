@@ -1,5 +1,5 @@
 import { apiGet } from './http';
-import { HOUR, businessMs, intervalMs } from './intervals';
+import { DAY, HOUR, businessMs, intervalMs, type HourProfile } from './intervals';
 import { lowerBound, type SeriesData } from './types';
 
 /**
@@ -19,11 +19,41 @@ const ANNUAL_HOURS = 24 * 365;
 const ANNUAL_BUSINESS_HOURS = 24 * (365 / 7) * 5;
 
 /**
- * Реализованная волатильность (7 и 30 дней), годовая.
- * clock = 'business' — для акций/сырья: дисперсия делится на рабочее время (выходные не считаются, гэп
- * выходных относится к утру понедельника). Так она согласована с ценой опционов, у которых время тоже идёт по будням.
+ * Профиль активности по часам суток (будни, UTC) по истории актива: какая доля дневной дисперсии цены
+ * приходится на каждый час. Доходность относится к часу свечи, которая её показала: гэп через ночь
+ * или выходные — к первой свече после перерыва (пока свечей нет, цена «стоит» и время почти не идёт).
+ * Это форма распределения, а не уровень волатильности: у акций почти вся дисперсия — в часы
+ * торговой сессии. null — свечи не внутридневные или истории мало.
  */
-export function computeRealizedVol(s: SeriesData, clock: 'calendar' | 'business' = 'calendar'): RealizedVol {
+export function computeHourProfile(s: SeriesData): HourProfile | null {
+  const dt = intervalMs(s.interval);
+  if (dt >= DAY || s.length < 200) return null;
+  const acc = new Float64Array(24);
+  for (let i = 1; i < s.length; i++) {
+    const r = Math.log(s.c[i] / s.c[i - 1]);
+    if (!Number.isFinite(r)) continue;
+    const d = new Date(s.t[i]);
+    const wd = d.getUTCDay();
+    if (wd === 0 || wd === 6) continue;
+    acc[d.getUTCHours()] += r * r;
+  }
+  const tot = acc.reduce((x, y) => x + y, 0);
+  if (!(tot > 0)) return null;
+  // время не должно останавливаться совсем: минимум — 2% среднего часа
+  const w = Array.from(acc, (x) => Math.max((x / tot) * 24, 0.02));
+  const k = 24 / w.reduce((x, y) => x + y, 0);
+  const c = new Float64Array(25);
+  for (let h = 0; h < 24; h++) c[h + 1] = c[h] + w[h] * k;
+  c[24] = 24;
+  return c;
+}
+
+/**
+ * Реализованная волатильность (7 и 30 дней), годовая.
+ * clock = 'business' — для акций/сырья: дисперсия делится на рабочее время (выходные не считаются, а с профилем
+ * часов — час сессии «длиннее» ночного). Так она согласована с ценой опционов, у которых время идёт так же.
+ */
+export function computeRealizedVol(s: SeriesData, clock: 'calendar' | 'business' = 'calendar', profile: HourProfile | null = null): RealizedVol {
   // выборка цен закрытия на часовой сетке (или по барам, если бар > 1ч)
   const times: number[] = [];
   const closes: number[] = [];
@@ -50,8 +80,8 @@ export function computeRealizedVol(s: SeriesData, clock: 'calendar' | 'business'
   for (let i = 1; i < n; i++) {
     const r = Math.log(closes[i] / closes[i - 1]);
     r2[i] = Number.isFinite(r) ? r * r : 0;
-    const span = clock === 'business' ? businessMs(t[i - 1], t[i]) : t[i] - t[i - 1];
-    hoursPer[i] = Math.max(clock === 'business' ? 0.25 : 1, span / HOUR);
+    const span = clock === 'business' ? businessMs(t[i - 1], t[i], profile) : t[i] - t[i - 1];
+    hoursPer[i] = Math.max(clock === 'business' ? 0.01 : 1, span / HOUR);
   }
   const roll = (windowHours: number, out: Float64Array) => {
     let sum = 0;

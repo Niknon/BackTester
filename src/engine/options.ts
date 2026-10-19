@@ -314,14 +314,14 @@ export type OptionClock = 'calendar' | 'business';
 const BUSINESS_YEAR_MS = (365 / 7) * 5 * DAY;
 
 /** Годы до экспирации по часам опциона: календарные (24/7) или рабочие (без выходных). */
-export function optionYears(expiry: number, now: number, clock: OptionClock = 'calendar') {
+export function optionYears(expiry: number, now: number, clock: OptionClock = 'calendar', profile?: Float64Array | null) {
   if (clock === 'calendar') return yearsTo(expiry, now);
-  return Math.max(0, businessMs(now, expiry) / BUSINESS_YEAR_MS);
+  return Math.max(0, businessMs(now, expiry, profile) / BUSINESS_YEAR_MS);
 }
 
 /** Годы до экспирации инструмента — с учётом его часов и момента расчёта на бирже. */
 export function instYears(inst: OptionInstrument, now: number) {
-  return optionYears(inst.settleAt ?? inst.expiry, now, inst.clock);
+  return optionYears(inst.settleAt ?? inst.expiry, now, inst.clock, inst.profile);
 }
 
 export interface OptionQuote {

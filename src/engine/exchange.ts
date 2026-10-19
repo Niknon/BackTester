@@ -256,7 +256,7 @@ export class Exchange {
     if (!inst) {
       const parsed = parseOptionSymbol(symbol);
       if (!parsed) return null;
-      inst = { ...parsed, clock: optionClockOf(parsed.underlying), settleAt: this.settleTime(parsed.expiry) };
+      inst = { ...parsed, clock: optionClockOf(parsed.underlying), profile: this.market.hourProfile.get(parsed.underlying) ?? null, settleAt: this.settleTime(parsed.expiry) };
       this.instCache.set(symbol, inst);
     }
     return inst;
@@ -274,7 +274,7 @@ export class Exchange {
 
   /** Годы до экспирации для базового актива: по его часам (будни у акций) и до момента расчёта. */
   optionT(underlying: string, expiry: number, now = this.state.now): number {
-    return optionYears(this.settleTime(expiry), now, optionClockOf(underlying));
+    return optionYears(this.settleTime(expiry), now, optionClockOf(underlying), this.market.hourProfile.get(underlying) ?? null);
   }
 
   volInputs(underlying: string, now = this.state.now): VolInputs {
@@ -296,9 +296,17 @@ export class Exchange {
     return this.optionQuote(symbol, S)?.mark ?? 0;
   }
 
-  /** Список экспираций для базового актива в текущий момент (без тех, что уже рассчитываются на ближайшей свече). */
+  /**
+   * Список экспираций для базового актива в текущий момент (без тех, что уже рассчитываются на ближайшей свече).
+   * У акций и сырья (рабочие часы) экспираций в субботу и воскресенье нет — в выходные торгов нет.
+   */
   optionExpiries(base: string): number[] {
-    return listExpiries(this.state.now, base).filter((e) => this.settleTime(e) > this.state.now);
+    const business = optionClockOf(`${base}USDT`) === 'business';
+    return listExpiries(this.state.now, base).filter((e) => {
+      if (this.settleTime(e) <= this.state.now) return false;
+      const wd = new Date(e).getUTCDay();
+      return !business || (wd !== 0 && wd !== 6);
+    });
   }
 
   /** Цепочка опционов для экспирации: страйки + котировки коллов и путов. */

@@ -1,7 +1,8 @@
 import { intervalMs } from '../data/intervals';
 import type { FundingPoint, IntervalKey, ProviderId, SeriesData } from '../data/types';
 import { lowerBound } from '../data/types';
-import { computeRealizedVol, type DvolSeries, type RealizedVol } from '../data/volatility';
+import { computeHourProfile, computeRealizedVol, type DvolSeries, type RealizedVol } from '../data/volatility';
+import type { HourProfile } from '../data/intervals';
 import { optionClockOf } from '../data/assets';
 
 /**
@@ -14,6 +15,8 @@ export class MarketData {
   readonly series = new Map<string, SeriesData>();
   readonly funding = new Map<string, FundingPoint[]>();
   readonly rv = new Map<string, RealizedVol>();
+  /** профиль активности по часам суток — для «рабочих» часов опционов на акции/сырьё */
+  readonly hourProfile = new Map<string, HourProfile | null>();
   readonly dvol = new Map<string, DvolSeries>();
   readonly providers = new Map<string, ProviderId>();
   private ptr = new Map<string, number>();
@@ -45,7 +48,10 @@ export class MarketData {
   addSeries(symbol: string, s: SeriesData, provider: ProviderId) {
     this.series.set(symbol, s);
     this.providers.set(symbol, provider);
-    this.rv.set(symbol, computeRealizedVol(s, optionClockOf(symbol)));
+    const clock = optionClockOf(symbol);
+    const profile = clock === 'business' ? computeHourProfile(s) : null;
+    this.hourProfile.set(symbol, profile);
+    this.rv.set(symbol, computeRealizedVol(s, clock, profile));
     this.ptr.delete(symbol);
   }
 

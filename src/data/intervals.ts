@@ -7,16 +7,35 @@ export const WEEK = 7 * DAY;
 
 const MONDAY0 = 4 * DAY; // 1970-01-05 — понедельник
 
-/** Миллисекунды будней (пн–пт, UTC) от понедельника 05.01.1970 до t. */
-function weekdayMs(t: number) {
-  const x = t - MONDAY0;
-  const w = Math.floor(x / WEEK);
-  return w * 5 * DAY + Math.min(x - w * WEEK, 5 * DAY);
+/**
+ * Профиль активности по часам суток (UTC): накопленный «вес» часов c[0..24], c[0] = 0, c[24] = 24.
+ * Вес часа h = c[h+1] − c[h]; у равномерного профиля каждый час весит 1.
+ */
+export type HourProfile = Float64Array;
+
+/** Время с начала суток, взвешенное профилем, мс. */
+function dayMs(within: number, p?: HourProfile | null) {
+  if (!p) return within;
+  const h = Math.min(23, Math.floor(within / HOUR));
+  const frac = (within - h * HOUR) / HOUR;
+  return (p[h] + (p[h + 1] - p[h]) * frac) * HOUR;
 }
 
-/** Рабочее (будничное, пн–пт UTC) время между a и b, мс. */
-export function businessMs(a: number, b: number) {
-  return weekdayMs(b) - weekdayMs(a);
+/** Миллисекунды будней (пн–пт, UTC) от понедельника 05.01.1970 до t (внутри дня — по профилю, если он задан). */
+function weekdayMs(t: number, p?: HourProfile | null) {
+  const x = t - MONDAY0;
+  const w = Math.floor(x / WEEK);
+  const r = x - w * WEEK;
+  const d = Math.floor(r / DAY);
+  return w * 5 * DAY + (d < 5 ? d * DAY + dayMs(r - d * DAY, p) : 5 * DAY);
+}
+
+/**
+ * Рабочее (будничное, пн–пт UTC) время между a и b, мс. С профилем час торговой сессии «длиннее»
+ * ночного: время идёт так, как реально меняется цена (сутки по-прежнему весят 24 часа).
+ */
+export function businessMs(a: number, b: number, profile?: HourProfile | null) {
+  return weekdayMs(b, profile) - weekdayMs(a, profile);
 }
 
 export interface IntervalDef {

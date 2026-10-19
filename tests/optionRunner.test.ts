@@ -18,7 +18,9 @@ import { T0, mkConfig, mkExchange, mkMarket } from './helpers';
 import { MarketData } from '../src/engine/market';
 import { seriesFromCandles, type Candle } from '../src/data/types';
 import { DEFAULT_FEES, DEFAULT_OPTION_MODEL } from '../src/engine/types';
-import { optionYears, quoteOption, parseOptionSymbol } from '../src/engine/options';
+import { optionYears, quoteOption, parseOptionSymbol, optionSymbol, listExpiries } from '../src/engine/options';
+import { computeHourProfile } from '../src/data/volatility';
+import { businessMs } from '../src/data/intervals';
 import { Exchange } from '../src/engine/exchange';
 
 type Bar = [number, number, number, number];
@@ -358,5 +360,88 @@ describe('Честная цена опционов на дневных свеч�
     expect(inst.settleAt).toBe(Date.UTC(2025, 0, 10, 0));
     // экспирация, которая рассчитается на ближайшей свече, в списке уже не показывается
     expect(ex.optionExpiries('NVDA').every((e) => ex.settleTime(e) > ex.now)).toBe(true);
+  });
+});
+
+/* ── время суток: у акций цена движется в часы сессии — и время опциона идёт тогда же ── */
+
+/** Синтетическая «акция»: свечи пн–пт 08:00–23:00 UTC, цена меняется только с 14 до 20 UTC. */
+function sessionStock(days: number, sigmaH: number, seed = 3) {
+  let x = seed;
+  const rnd = () => ((x = (x * 1103515245 + 12345) % 2147483648) / 2147483648);
+  const gauss = () => Math.sqrt(-2 * Math.log(rnd() + 1e-12)) * Math.cos(2 * Math.PI * rnd());
+  const start = Date.UTC(2024, 0, 1); // понедельник
+  const candles: Candle[] = [];
+  let p = 100;
+  for (let d = 0; d < days; d++) {
+    const day = start + d * DAY;
+    const wd = new Date(day).getUTCDay();
+    if (wd === 0 || wd === 6) continue;
+    for (let h = 8; h < 24; h++) {
+      const o = p;
+      if (h >= 14 && h < 20) p = p * Math.exp(sigmaH * gauss() - (sigmaH * sigmaH) / 2);
+      candles.push({ t: day + h * HOUR, o, h: Math.max(o, p), l: Math.min(o, p), c: p, v: 1 });
+    }
+  }
+  return { start, candles };
+}
+
+describe('Время суток у акций', () => {
+  it('профиль: почти всё время дня приходится на часы, когда цена движется', () => {
+    const { candles } = sessionStock(200, 0.004);
+    const prof = computeHourProfile(seriesFromCandles('NVDAUSDT', '1h', candles))!;
+    expect(prof[20] - prof[14]).toBeGreaterThan(23); // 6 часов сессии ≈ 24 «часа» опциона
+    expect(prof[14] - prof[0]).toBeLessThan(0.5);
+    const mon = Date.UTC(2025, 0, 6);
+    expect(businessMs(mon + 8 * HOUR, mon + 14 * HOUR, prof)).toBeLessThan(0.2 * HOUR);
+    expect(businessMs(mon + 14 * HOUR, mon + 20 * HOUR, prof)).toBeGreaterThan(23 * HOUR);
+    // без профиля — обычные будни
+    expect(businessMs(mon + 8 * HOUR, mon + 14 * HOUR)).toBe(6 * HOUR);
+  });
+
+  it('купить колл утром и продать вечером (с хеджем дельты) — в среднем без «бесплатной» прибыли', () => {
+    const sigmaH = 0.006;
+    const { start, candles } = sessionStock(560, sigmaH, 11);
+    const m = new MarketData('1h', start + 30 * DAY, start + 560 * DAY);
+    m.addSeries('NVDAUSDT', seriesFromCandles('NVDAUSDT', '1h', candles), 'synthetic');
+    // честная модель: IV = истинной волатильности (в рабочем времени), без премии и спреда
+    const iv = sigmaH * Math.sqrt(6 * (365 / 7) * 5);
+    const cfg = mkConfig({ start: m.start, end: m.end, symbols: ['NVDAUSDT'], options: { ...DEFAULT_OPTION_MODEL, ivSource: 'fixed', fixedIv: iv, ivPremium: 1, spreadPct: 0, skew: 0, smile: 0 } });
+    const ex = Exchange.create(cfg, m);
+    const vol = ex.volInputs('NVDAUSDT');
+    const res = (a: number, b: number) => {
+      let sum = 0;
+      let n = 0;
+      for (let d = m.start; d < m.end - 9 * DAY; d += DAY) {
+        const wd = new Date(d).getUTCDay();
+        if (wd === 0 || wd === 6) continue;
+        const ta = d + a * HOUR;
+        const tb = d + b * HOUR;
+        const Sa = m.closeAt('NVDAUSDT', ta)!;
+        const Sb = m.closeAt('NVDAUSDT', tb)!;
+        const e = listExpiries(ta, 'NVDA').filter((x) => x - ta > 3 * DAY && new Date(x).getUTCDay() === 5)[0];
+        const inst = ex.optionInstrument(optionSymbol('NVDA', e, Math.round(Sa), 'C'))!;
+        const qa = quoteOption(cfg.options, inst, Sa, ta, vol);
+        const qb = quoteOption(cfg.options, inst, Sb, tb, vol);
+        sum += (qb.mark - qa.mark - qa.greeks.delta * (Sb - Sa)) / qa.mark;
+        n++;
+      }
+      return sum / n;
+    };
+    // раньше время шло равномерно: утром «сгорало» полдня без движения цены → +6% премии за день
+    expect(Math.abs(res(8, 20))).toBeLessThan(0.03);
+    expect(Math.abs(res(20, 32))).toBeLessThan(0.01); // ночью цена стоит — и опцион почти не дешевеет
+  });
+
+  it('у акций нет экспираций в выходные, у крипты есть', () => {
+    const start = Date.UTC(2025, 0, 10); // пятница: дневные экспирации — пт, сб, вс
+    const m = new MarketData('1h', start, start + 10 * DAY);
+    const flatC = (sym: string, px: number): Candle[] => Array.from({ length: 24 * 50 }, (_, i) => ({ t: start - 40 * DAY + i * HOUR, o: px, h: px, l: px, c: px, v: 1 }));
+    m.addSeries('NVDAUSDT', seriesFromCandles('NVDAUSDT', '1h', flatC('NVDAUSDT', 140)), 'synthetic');
+    m.addSeries('BTCUSDT', seriesFromCandles('BTCUSDT', '1h', flatC('BTCUSDT', 90000)), 'synthetic');
+    const ex = Exchange.create(mkConfig({ start, end: start + 10 * DAY, symbols: ['NVDAUSDT', 'BTCUSDT'] }), m);
+    const wdays = (base: string) => ex.optionExpiries(base).map((e) => new Date(e).getUTCDay());
+    expect(wdays('NVDA').some((d) => d === 0 || d === 6)).toBe(false);
+    expect(wdays('BTC').some((d) => d === 0 || d === 6)).toBe(true);
   });
 });
