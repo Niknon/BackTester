@@ -170,7 +170,7 @@ export async function loadSeries(o: LoadOptions): Promise<LoadResult> {
   }
   if (best && stockLike && o.provider !== 'synthetic' && o.fallback !== false) {
     const merged = await withIntradayHistory(o, best, errors);
-    if (merged) return { series: await repairSplitBlocks(merged, o, errors), provider: 'dukascopy', errors };
+    if (merged) return { series: await repairSplitBlocks(merged, o, errors, best.provider === 'yahoo' ? best.series : undefined), provider: 'dukascopy', errors };
   }
   if (best) return { series: stockLike && best.provider !== 'synthetic' ? await repairSplitBlocks(best.series, o, errors) : best.series, provider: best.provider, errors };
   throw new Error(`Не удалось загрузить ${o.symbol}:\n${errors.join('\n')}`);
@@ -185,17 +185,26 @@ const fmtDay = (t: number) => new Date(t).toISOString().slice(0, 10);
  * архивы. Сверяем каждый день с дневной ценой Yahoo (она скорректирована на все сплиты) и делим дни,
  * где расхождение совпадает с произведением последующих сплитов.
  */
-export function fixSplitBlocks(s: SeriesData, splits: Split[], ref: { t: number; c: number }[]): { series: SeriesData; fixed: { from: number; to: number; factor: number }[] } {
+/** Типичные коэффициенты сплитов — если список сплитов получить не удалось. */
+const COMMON_SPLITS = [1.5, 2, 3, 4, 5, 6, 7, 8, 10, 12, 15, 20, 25, 30, 40, 50, 100];
+
+export function fixSplitBlocks(s: SeriesData, splits: Split[] | null, ref: { t: number; c: number }[]): { series: SeriesData; fixed: { from: number; to: number; factor: number }[] } {
   const fixed: { from: number; to: number; factor: number }[] = [];
-  if (!s.length || !splits.length || !ref.length) return { series: s, fixed };
+  if (!s.length || (splits && !splits.length) || !ref.length) return { series: s, fixed };
   const refDay = new Map<number, number>();
   for (const r of ref) refDay.set(Math.floor(r.t / DAY), r.c);
-  const sp = [...splits].sort((a, b) => a.t - b.t);
-  // множитель «сырой» цены для дня d: произведение сплитов после него (и его «хвосты» — если часть сплитов учтена)
+  const sp = splits ? [...splits].sort((a, b) => a.t - b.t) : [];
+  const generic = [1, ...COMMON_SPLITS, ...COMMON_SPLITS.map((x) => 1 / x)];
+  // множитель цены дня d: произведение сплитов после него (и его «хвосты» — если часть сплитов учтена);
+  // обратные — если поправку на сплит применили к уже скорректированным ценам
   const candidates = (dayStart: number) => {
+    if (!splits) return generic;
     const later = sp.filter((x) => x.t > dayStart);
     const out = [1];
-    for (let k = 0; k < later.length; k++) out.push(later.slice(k).reduce((a, x) => a * x.factor, 1));
+    for (let k = 0; k < later.length; k++) {
+      const f = later.slice(k).reduce((a, x) => a * x.factor, 1);
+      out.push(f, 1 / f);
+    }
     return out;
   };
   const factorOfDay = new Map<number, number>();
@@ -222,32 +231,45 @@ export function fixSplitBlocks(s: SeriesData, splits: Split[], ref: { t: number;
   }
   if (!factorOfDay.size) return { series: s, fixed };
   const c: Candle[] = [];
+  let prev = 1;
   for (let k = 0; k < s.length; k++) {
     const day = Math.floor(s.t[k] / DAY);
     const f = factorOfDay.get(day) ?? 1;
     c.push({ t: s.t[k], o: s.o[k] / f, h: s.h[k] / f, l: s.l[k] / f, c: s.c[k] / f, v: s.v[k] * f });
     if (f !== 1) {
-      const last = fixed[fixed.length - 1];
-      if (last && last.factor === f && s.t[k] - last.to <= 5 * DAY) last.to = s.t[k];
+      // непрерывный кусок — подряд идущие свечи с тем же множителем
+      if (prev === f) fixed[fixed.length - 1].to = s.t[k];
       else fixed.push({ from: s.t[k], to: s.t[k], factor: f });
     }
+    prev = f;
   }
   return { series: seriesFromCandles(s.symbol, s.interval, c), fixed };
 }
 
-async function repairSplitBlocks(s: SeriesData, o: LoadOptions, errors: string[]): Promise<SeriesData> {
+/**
+ * Проверка истории акции на куски без поправки на сплит (см. fixSplitBlocks). Эталон — дневные свечи Yahoo;
+ * если запрос не прошёл — дневные свечи Yahoo из самой загрузки (fallbackRef). Если не получен список сплитов,
+ * сверяем по типичным коэффициентам: расхождение с эталоном больше чем в 1.35 раза у верной истории не бывает.
+ */
+async function repairSplitBlocks(s: SeriesData, o: LoadOptions, errors: string[], fallbackRef?: SeriesData): Promise<SeriesData> {
   if (!s.length) return s;
-  try {
-    const splits = (await allSplits(o.symbol, o.signal)).filter((x) => x.t > s.t[0]);
-    if (!splits.length) return s;
-    const ref = await yahooDaily(o.symbol, s.t[0] - 7 * DAY, Date.now(), o.signal);
-    const { series, fixed } = fixSplitBlocks(s, splits, ref);
-    for (const f of fixed) errors.push(`${o.symbol}: свечи ${fmtDay(f.from)} — ${fmtDay(f.to)} пришли без поправки на сплит (цены ×${+f.factor.toFixed(4)}) — исправлено`);
-    return series;
-  } catch (e: any) {
+  const abort = (e: any) => {
     if (e?.name === 'AbortError') throw e;
-    return s;
+    return null;
+  };
+  let splits = await allSplits(o.symbol, o.signal).catch(abort);
+  if (splits) {
+    splits = splits.filter((x) => x.t > s.t[0]);
+    if (!splits.length) return s;
   }
+  let ref: { t: number; c: number }[] | null = await yahooDaily(o.symbol, s.t[0] - 7 * DAY, Date.now(), o.signal).catch(abort);
+  if (!ref?.length && fallbackRef?.length) ref = Array.from(fallbackRef.t, (t, i) => ({ t, c: fallbackRef.c[i] }));
+  if (!ref?.length) return s;
+  const { series, fixed } = fixSplitBlocks(s, splits, ref);
+  if (fixed.length > 3)
+    errors.push(`${o.symbol}: ${fixed.length} кусков истории между ${fmtDay(fixed[0].from)} и ${fmtDay(fixed[fixed.length - 1].to)} пришли без поправки на сплит — исправлено по дневным ценам Yahoo`);
+  else for (const f of fixed) errors.push(`${o.symbol}: свечи ${fmtDay(f.from)} — ${fmtDay(f.to)} пришли без поправки на сплит (цены ×${+f.factor.toFixed(4)}) — исправлено`);
+  return series;
 }
 
 /**

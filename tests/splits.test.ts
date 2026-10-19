@@ -69,6 +69,31 @@ describe('История акций: куски без поправки на с�
     expect(fixed.map((f) => f.factor)).toEqual([10]);
   });
 
+  it('кусок, поделённый на сплит дважды (в 10 раз ниже), тоже исправляется', () => {
+    const low = seriesFromCandles('NFLXUSDT', '1h', hourly(from, days, (d) => {
+      const t = from + d * DAY;
+      return t >= blockA && t < blockB ? adj(d) / 10 : adj(d);
+    }));
+    const { series, fixed } = fixSplitBlocks(low, [{ t: split, factor: 10 }], ref);
+    expect(fixed.map((f) => f.factor)).toEqual([0.1]);
+    let maxJump = 0;
+    for (let i = 1; i < series.length; i++) maxJump = Math.max(maxJump, Math.abs(Math.log(series.c[i] / series.c[i - 1])));
+    expect(maxJump).toBeLessThan(0.02);
+  });
+
+  it('список сплитов недоступен: дни ×10 вперемешку с верными исправляются по типичным коэффициентам', () => {
+    // архив в «сырых» ценах, а дни, где файлы не загрузились, заполнены верными дневными свечами
+    const mixed = seriesFromCandles('NVDAUSDT', '1h', hourly(from, 120, (d) => (d % 3 === 0 ? adj(d) : adj(d) * 10)));
+    const { series, fixed } = fixSplitBlocks(mixed, null, ref);
+    expect(fixed.length).toBeGreaterThan(10);
+    expect(fixed.every((f) => f.factor === 10)).toBe(true);
+    let maxJump = 0;
+    for (let i = 1; i < series.length; i++) maxJump = Math.max(maxJump, Math.abs(Math.log(series.c[i] / series.c[i - 1])));
+    expect(maxJump).toBeLessThan(0.02);
+    // верная история не трогается и без списка сплитов
+    expect(fixSplitBlocks(seriesFromCandles('NVDAUSDT', '1h', hourly(from, 120, adj)), null, ref).fixed.length).toBe(0);
+  });
+
   it('скачок цены в 10 раз виден в предупреждениях стратегии', () => {
     const m = new MarketData('1h', from + 40 * DAY, from + 400 * DAY);
     m.addSeries('NFLXUSDT', s, 'yahoo');
