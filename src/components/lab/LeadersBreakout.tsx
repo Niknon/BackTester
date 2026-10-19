@@ -414,6 +414,11 @@ function Report({ r }: { r: RunResult }) {
         <span className="text-muted">
           {bt.market === 'us' ? 'США' : bt.market === 'moex' ? 'Мосбиржа' : 'Крипта'} · {bt.universeSize} активов · {m.start} — {m.end} ({m.years.toFixed(1)} лет)
         </span>
+        {bt.notes?.map((n, i) => (
+          <span key={i} className="text-[11px] text-dim">
+            {n}
+          </span>
+        ))}
         {m.checks.map((c) => (
           <Badge key={c.name} color={c.pass ? 'up' : 'down'}>
             {c.pass ? '✓' : '✗'} {c.name}: {c.value}

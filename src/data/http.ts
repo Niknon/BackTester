@@ -110,6 +110,38 @@ export async function apiGetBinary(proxyPrefix: string, directBase: string, path
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
 
+/**
+ * GET текстовой страницы (HTML сайтов без API) с повторами. null — страницы нет (404).
+ * В браузере — только через локальный прокси: такие сайты не отдают CORS-заголовков.
+ */
+export async function apiGetText(proxyPrefix: string, directBase: string, path: string, signal?: AbortSignal, retries = 2, timeoutMs = 20_000): Promise<string | null> {
+  const isBrowser = typeof window !== 'undefined' && typeof location !== 'undefined';
+  const url = isBrowser ? `${proxyPrefix}${path}` : `${directBase}${path}`;
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+    const ctl = new AbortController();
+    const onAbort = () => ctl.abort();
+    signal?.addEventListener('abort', onAbort);
+    const timer = setTimeout(() => ctl.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, { signal: ctl.signal, headers: { accept: 'text/html,*/*' } });
+      if (res.status === 404 || res.status === 410) return null;
+      if (!res.ok) throw new HttpError(`HTTP ${res.status}`, res.status);
+      return await res.text();
+    } catch (e: any) {
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+      lastErr = e?.name === 'AbortError' ? new Error('таймаут запроса') : e;
+      if (e instanceof HttpError && (e.status === 403 || e.status === 401)) throw e;
+      if (attempt < retries) await sleep(Math.min(8000, 800 * 2 ** attempt));
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+}
+
 /** Параллельное выполнение задач с ограничением конкуренции. */
 export async function pool<T, R>(
   items: T[],

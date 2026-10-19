@@ -3,10 +3,11 @@
  *  - us:     Yahoo Finance, цены скорректированы на сплиты и дивиденды (как yfinance auto_adjust=True), шаг — 1 акция;
  *  - crypto: спот к USDT (Binance, при недоступности — OKX), догружаются только недостающие дни, шаг — лот биржи;
  *  - moex:   MOEX ISS, режим TQBR; цены свечей ISS уже учитывают сплиты, объём приводится по списку сплитов ISS;
- *            шаг — лот (LOTSIZE). Дивиденды — из ISS, если он их отдаёт.
+ *            шаг — лот (LOTSIZE). Дивиденды — MOEX ISS → dohod.ru → smart-lab.ru (см. dividends.ts).
  */
 import { apiGet, pool, sleep } from '../data/http';
 import { idbGet, idbSet } from '../data/cache';
+import { adjustForDividends, DIV_SOURCE_LABEL, moexDividends, type DivAdjustStats, type DivSource, type MoexDividend } from './dividends';
 import { DAY, type AssetData, type Dataset } from './backtest';
 import { warmupBars, type LbConfig, type Market } from './config';
 import type { Bars } from './rules';
@@ -263,18 +264,6 @@ async function moexMeta(signal?: AbortSignal): Promise<MoexMeta> {
   return { lots, splits };
 }
 
-/** Дивиденды из ISS (если отдаёт): дата закрытия реестра и сумма на акцию. null — эндпоинт данных не вернул. */
-async function moexDividends(secid: string, signal?: AbortSignal): Promise<{ t: number; value: number }[] | null> {
-  const json = await apiGet(MOEX[0], MOEX[1], `/iss/securities/${secid}/dividends.json`, { 'iss.meta': 'off', 'iss.only': 'dividends' }, signal, 1).catch(() => null);
-  const d = json?.dividends;
-  if (!d?.columns) return null;
-  const cols: string[] = d.columns;
-  return (d.data as any[][])
-    .filter((r) => String(r[cols.indexOf('currencyid')] ?? 'RUB') === 'RUB')
-    .map((r) => ({ t: Date.parse(String(r[cols.indexOf('registryclosedate')]) + 'T00:00:00Z'), value: Number(r[cols.indexOf('value')]) }))
-    .filter((x) => Number.isFinite(x.t) && x.value > 0);
-}
-
 /**
  * Сплиты и консолидации. Свечи ISS (candles) уже пересчитаны по ценам задним числом (GMKN до сплита 1:100 — ~153,
  * а не ~15 300), но объём в штуках остаётся прежним. Без поправки оборот close × volume до сплита занижался бы в 100 раз
@@ -293,29 +282,9 @@ export function adjustSplitVolumes(rows: Row[], splits: { t: number; before: num
   return out;
 }
 
-/**
- * Корректировка на дивиденды: гэп отсечки — первый день, купив в который, дивиденд не получить
- * (режим T+1 с 31.07.2023 — дата закрытия реестра, раньше T+2 — торговый день до неё).
- * Цены всех более ранних баров × (1 − D / close накануне гэпа).
- */
-export function adjustDividends(rows: Row[], divs: { t: number; value: number }[]): Row[] {
-  const out = rows.map((r) => ({ ...r }));
-  const T1 = Date.UTC(2023, 6, 31);
-  for (const d of divs) {
-    let gap = out.findIndex((r) => r.t >= d.t); // первый торговый день на дату реестра или позже
-    if (gap < 0) continue;
-    if (d.t < T1) gap -= 1; // T+2: гэп на торговый день раньше
-    if (gap < 1) continue;
-    const f = 1 - d.value / out[gap - 1].c;
-    if (!(f > 0 && f < 1)) continue;
-    for (let i = 0; i < gap; i++) {
-      out[i].o *= f;
-      out[i].h *= f;
-      out[i].l *= f;
-      out[i].c *= f;
-    }
-  }
-  return out;
+/** Корректировка на дивиденды (реализация и правила даты отсечки — в dividends.ts). */
+export function adjustDividends(rows: Row[], divs: MoexDividend[], stats?: DivAdjustStats): Row[] {
+  return adjustForDividends(rows, divs, stats);
 }
 
 /* ───────────────────────── Сборка датасета ───────────────────────── */
@@ -381,7 +350,9 @@ export async function loadDataset(market: Market, universe: string[], c: LbConfi
   const benchSym = c.benchmark || 'IMOEX';
   const bench = await moexSeries(benchSym, `/iss/engines/stock/markets/index/securities/${benchSym}/candles.json`, from, to, opts.signal);
   step(`Бенчмарк ${benchSym}`);
-  let divUnavailable = 0;
+  const divBySource: Record<DivSource, number> = { iss: 0, dohod: 0, smartlab: 0 };
+  const noDivs: string[] = [];
+  const divStats: DivAdjustStats = { applied: 0, suspicious: 0 };
   const assets = await pool(
     universe,
     4,
@@ -393,9 +364,12 @@ export async function loadDataset(market: Market, universe: string[], c: LbConfi
           rows,
           meta.splits.filter((s) => s.secid === secid),
         );
-        const divs = await moexDividends(secid, opts.signal);
-        if (divs === null) divUnavailable++;
-        else rows = adjustDividends(rows, divs);
+        const dr = await moexDividends(secid, opts.signal);
+        if (!dr) noDivs.push(secid);
+        else {
+          divBySource[dr.source]++;
+          rows = adjustDividends(rows, dr.divs, divStats);
+        }
       } catch (e: any) {
         if (e?.name === 'AbortError') throw e;
         warnings.push(`${secid}: не загрузился (${String(e?.message || e).slice(0, 60)})`);
@@ -406,16 +380,25 @@ export async function loadDataset(market: Market, universe: string[], c: LbConfi
     },
     opts.signal,
   );
-  if (divUnavailable)
+  if (noDivs.length)
     warnings.push(
-      `MOEX ISS не отдал данные о дивидендах (${divUnavailable} из ${universe.length} бумаг) — их цены НЕ скорректированы на дивиденды: дивидендные гэпы могут давать ложные выходы по стопам и трейлингу. Сплиты и консолидации учтены.`,
+      `Дивиденды не найдены ни в одном источнике (${Object.values(DIV_SOURCE_LABEL).join(', ')}) для ${noDivs.length} из ${universe.length} бумаг ` +
+        `(${noDivs.slice(0, 12).join(', ')}${noDivs.length > 12 ? ', …' : ''}) — их цены НЕ скорректированы на дивиденды: дивидендные гэпы могут давать ложные выходы по стопам и трейлингу.`,
     );
-  return finish('moex', benchSym, bench, assets, warnings);
+  if (divStats.suspicious)
+    warnings.push(`${divStats.suspicious} дивидендных выплат пропущено: сумма больше половины цены акции — похоже на ошибку источника.`);
+  const used = (Object.entries(divBySource) as [DivSource, number][]).filter(([, n]) => n > 0).map(([k, n]) => `${DIV_SOURCE_LABEL[k]} — ${n}`);
+  const notes = used.length
+    ? [
+        `Дивиденды: ${used.join(', ')} бумаг; поправок на дивиденды в ценах: ${divStats.applied}. Сплиты и консолидации учтены (MOEX ISS).`,
+      ]
+    : [];
+  return finish('moex', benchSym, bench, assets, warnings, notes);
 }
 
-function finish(market: Market, benchSymbol: string, benchRows: Row[], assets: (AssetData | null)[], warnings: string[]): Dataset {
+function finish(market: Market, benchSymbol: string, benchRows: Row[], assets: (AssetData | null)[], warnings: string[], notes: string[] = []): Dataset {
   if (!benchRows.length) throw new Error(`Нет данных бенчмарка ${benchSymbol}`);
   const ok = assets.filter((a): a is AssetData => !!a);
   if (!ok.length) throw new Error('Не загрузился ни один актив вселенной');
-  return { market, benchSymbol, bench: toBars(benchRows), assets: ok, warnings };
+  return { market, benchSymbol, bench: toBars(benchRows), assets: ok, warnings, notes };
 }

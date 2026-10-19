@@ -6,6 +6,9 @@ export const PROXY_TARGETS = {
   '/proxy/binance-fapi': 'https://fapi.binance.com',
   '/proxy/binance-spot': 'https://api.binance.com',
   '/proxy/moex': 'https://iss.moex.com',
+  // дивиденды акций Мосбиржи (ISS больше не отдаёт их бесплатно): таблицы на dohod.ru и smart-lab.ru
+  '/proxy/dohod': 'https://www.dohod.ru',
+  '/proxy/smartlab': 'https://smart-lab.ru',
   '/proxy/deribit': 'https://www.deribit.com',
   '/proxy/yahoo': 'https://query1.finance.yahoo.com',
   '/proxy/dukascopy': 'https://datafeed.dukascopy.com',

@@ -25,6 +25,8 @@ export interface Dataset {
   assets: AssetData[];
   /** предупреждения загрузки (нет данных, не скорректировано и т. п.) */
   warnings: string[];
+  /** справка о данных (источники, сколько поправок применено) */
+  notes?: string[];
 }
 
 export type ExitReason = 'trail' | 'time' | 'stop_gap' | 'stop' | 'end_of_test';
@@ -99,6 +101,7 @@ export interface BacktestResult {
   decisions: Decision[];
   skips: Record<'no_bar' | 'slots' | 'cash' | 'turnover' | 'size', number>;
   warnings: string[];
+  notes: string[];
   universeSize: number;
   /** позиции и счёт перед закрытием в конце теста — для передачи в сканер */
   openAtEnd: OpenPositionRow[];
@@ -173,6 +176,7 @@ export async function runBacktest(p: Prepared, c: LbConfig, opts: { onProgress?:
     decisions: [],
     skips: { no_bar: 0, slots: 0, cash: 0, turnover: 0, size: 0 },
     warnings: [...dataset.warnings],
+    notes: [...(dataset.notes ?? [])],
     universeSize: n,
     openAtEnd: [],
     accountAtEnd: { equity: c.initial_capital, peak: c.initial_capital, cash: c.initial_capital, throttle: false, halted: false },

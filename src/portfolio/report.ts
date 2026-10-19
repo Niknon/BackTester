@@ -225,6 +225,10 @@ export function summaryMarkdown(r: BacktestResult, m: LbMetrics, warnings: strin
   L.push('', '## Предупреждения', '');
   if (!warnings.length) L.push('- нет');
   for (const w of warnings) L.push(`- ${w}`);
+  if (r.notes?.length) {
+    L.push('', '## Данные', '');
+    for (const n of r.notes) L.push(`- ${n}`);
+  }
   return L.join('\n') + '\n';
 }
 
