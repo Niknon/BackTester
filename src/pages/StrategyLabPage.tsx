@@ -9,6 +9,7 @@ import { toast, useSession } from '../store/session';
 import { downloadText, fmtNum, fmtPct, fmtPrice, fmtQty, fmtTime, fmtUsd, pnlClass, toCsv } from '../lib/format';
 import { Badge, cx, Empty, NumInput, ProgressBar, Select, Tabs, usePersistent } from '../components/ui';
 import { LeadersBreakoutPanel } from '../components/lab/LeadersBreakout';
+import { OptionStrategyPanel } from '../components/lab/OptionStrategyPanel';
 import { ReportGrid } from '../components/ReportGrid';
 import { EquityChart } from '../components/EquityChart';
 import { StrategyChart } from '../components/lab/StrategyChart';
@@ -62,9 +63,9 @@ function loadSaved(): Record<string, string> {
   }
 }
 
-/** Стратегии: скрипт на одном инструменте (редактор кода) или портфельная стратегия «Пробой лидеров». */
+/** Стратегии: скрипт на одном инструменте (редактор кода), портфельная «Пробой лидеров» и опционная стратегия с настройками в интерфейсе. */
 export function StrategyLabPage() {
-  const [mode, setMode] = usePersistent<'script' | 'leaders'>('bt-lab-mode', 'script', ['script', 'leaders']);
+  const [mode, setMode] = usePersistent<'script' | 'leaders' | 'options'>('bt-lab-mode', 'script', ['script', 'leaders', 'options']);
   return (
     <div className="h-full flex flex-col gap-1 p-1">
       <div className="flex items-center gap-1 px-1">
@@ -74,8 +75,11 @@ export function StrategyLabPage() {
         <button className={cx('chip border border-line2', mode === 'leaders' && 'active')} onClick={() => setMode('leaders')}>
           Портфельная: «Пробой лидеров»
         </button>
+        <button className={cx('chip border border-line2', mode === 'options' && 'active')} onClick={() => setMode('options')}>
+          Опционная стратегия
+        </button>
       </div>
-      {mode === 'script' ? <ScriptLab /> : <LeadersBreakoutPanel />}
+      {mode === 'script' ? <ScriptLab /> : mode === 'leaders' ? <LeadersBreakoutPanel /> : <OptionStrategyPanel />}
     </div>
   );
 }
