@@ -8,9 +8,9 @@ import { okxProvider } from './providers/okx';
 import { binanceProvider } from './providers/binance';
 import { syntheticProvider } from './providers/synthetic';
 import { allSplits, fetchSplits, yahooDaily, yahooIntradayFrom, yahooProvider, type Split } from './providers/yahoo';
-import { dukaInstrument, dukascopyDown, dukascopyProvider } from './providers/dukascopy';
+import { DUKA_MINUTE_DAYS, dukaInstrument, dukascopyDown, dukascopyProvider } from './providers/dukascopy';
 import { getAsset } from './assets';
-import { DAY } from './intervals';
+import { DAY, HOUR } from './intervals';
 
 export const PROVIDERS: Record<ProviderId, DataProvider> = {
   bybit: bybitProvider,
@@ -68,6 +68,8 @@ export interface LoadOptions {
   onProgress?: (done: number, total: number, message?: string) => void;
   /** пробовать другие реальные источники, если выбранный недоступен */
   fallback?: boolean;
+  /** догружать старую внутридневную историю с Dukascopy (false — только основной источник) */
+  archive?: boolean;
 }
 
 export interface LoadResult {
@@ -95,7 +97,7 @@ async function loadFrom(p: DataProvider, o: LoadOptions, stats?: { partial: numb
       const to = Math.min(cs + span, Math.floor(now / dt) * dt + dt);
       const candles = from < to ? await p.fetchKlines(o.symbol, o.interval, from, to, {
         signal: o.signal,
-        onProgress: (d, t) => o.onProgress?.(done + d / t, chunks.length, `${p.label}: ${o.symbol}`),
+        onProgress: (d, t, m) => o.onProgress?.(done + (t ? d / t : 0), chunks.length, m ?? `${p.label}: ${o.symbol}`),
       }) : [];
       const partial = (candles as Klines).partial ?? 0;
       if (partial && stats) stats.partial += partial;
@@ -287,6 +289,10 @@ async function withIntradayHistory(o: LoadOptions, best: { series: SeriesData; p
   // основной источник уже детальный или грубых свечей всего несколько дней (обычно часть истории до старта) —
   // архив не нужен: дневные свечи там не мешают, а запросы к Dukascopy медленные
   if (o.provider !== 'dukascopy' && Math.min(o.end, coarseUntil) - from < 7 * DAY) return null;
+  if (o.archive === false) {
+    errors.push(`Dukascopy отключён в настройках сессии — для ${o.symbol} до ${fmtDay(Math.min(o.end, coarseUntil))} используются дневные свечи ${PROVIDERS[best.provider].label}`);
+    return null;
+  }
   if (dukascopyDown()) {
     errors.push(`Dukascopy сейчас не отвечает или пропущен — для ${o.symbol} до ${fmtDay(Math.min(o.end, coarseUntil))} используются дневные свечи ${PROVIDERS[best.provider].label}`);
     return null;
@@ -298,7 +304,13 @@ async function withIntradayHistory(o: LoadOptions, best: { series: SeriesData; p
   let d: SeriesData;
   const stats = { partial: 0 };
   try {
-    d = await loadFrom(PROVIDERS.dukascopy, { ...o, start: from, end: to }, stats);
+    // один поток файлов на весь период (файлы кэшируются по одному — куски свечей кэшировать не нужно)
+    const k = await PROVIDERS.dukascopy.fetchKlines(o.symbol, o.interval, from, to, {
+      signal: o.signal,
+      onProgress: (done, total, m) => o.onProgress?.(done, total, m ?? `Dukascopy: ${o.symbol}`),
+    });
+    stats.partial = k.partial ?? 0;
+    d = seriesFromCandles(o.symbol, o.interval, dedupe(k));
   } catch (e: any) {
     if (e?.name === 'AbortError') throw e;
     errors.push(`Dukascopy: ${String(e?.message || e).slice(0, 160)} — для старых периодов остаются дневные свечи Yahoo`);
@@ -355,15 +367,17 @@ async function withIntradayHistory(o: LoadOptions, best: { series: SeriesData; p
     if (inside) filled++;
     out.push({ t, o: y.o[i], h: y.h[i], l: y.l[i], c: y.c[i], v: y.v[i] });
   }
+  const minuteFrom = Math.floor(Date.now() / DAY) * DAY - DUKA_MINUTE_DAYS * DAY;
   errors.push(
     `${o.symbol}: внутридневная история ${fmtDay(lo)} — ${fmtDay(hi)} загружена с Dukascopy` +
+      (dt < HOUR && lo < minuteFrom ? ` (до ${fmtDay(minuteFrom)} — часовые свечи: минутные файлы архива идут по одному на день и грузились бы часами)` : '') +
       (o.start < lo ? `; раньше ${fmtDay(lo)} — ${PROVIDERS[best.provider].label} (${coarseUntil > o.start && best.provider === 'yahoo' ? 'дневные свечи' : 'как есть'})` : ''),
   );
   if (stats.partial)
     errors.push(
       `Dukascopy: ${stats.partial} файл(ов) истории ${o.symbol} не загрузились (сервер ограничивает частоту запросов)` +
         (filled ? ` — пропуски заполнены свечами ${PROVIDERS[best.provider].label}` : '') +
-        '. Скачанное сохранено в кэше — при следующей загрузке докачаются только неполные части',
+        '. Скачанные файлы сохранены в кэше — при следующей загрузке докачаются только недостающие',
     );
   return seriesFromCandles(o.symbol, o.interval, dedupe(out));
 }

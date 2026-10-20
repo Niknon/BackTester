@@ -2,7 +2,7 @@ import type { Candle, FundingPoint, IntervalKey, ProviderId } from '../types';
 
 export interface FetchOpts {
   signal?: AbortSignal;
-  onProgress?: (done: number, total: number) => void;
+  onProgress?: (done: number, total: number, message?: string) => void;
 }
 
 /** Свечи; partial — часть файлов не загрузилась (кэшировать как полный кусок нельзя). */

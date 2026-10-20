@@ -227,6 +227,8 @@ export interface SessionConfig {
   /** проскальзывание рыночных ордеров, б.п. */
   slippageBps: number;
   fundingEnabled: boolean;
+  /** догружать старую внутридневную историю акций/индексов/сырья с Dukascopy (по умолчанию — да) */
+  dukascopy?: boolean;
   /** ставка funding по умолчанию (если нет истории), за 8ч */
   defaultFundingRate: number;
   options: OptionModelConfig;

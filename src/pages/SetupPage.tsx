@@ -17,7 +17,7 @@ import {
   type SavedSession,
 } from '../store/actions';
 import { toast, useSession } from '../store/session';
-import { Badge, Check, cx, NumInput, Segmented, Select, TextInput } from '../components/ui';
+import { Badge, Check, cx, NumInput, Segmented, Select, TextInput, usePersistent } from '../components/ui';
 import { downloadText, fmtDate, fmtNum, fmtPct, fmtTime, fmtUsd } from '../lib/format';
 
 const PRESETS: { key: string; label: string; days: number }[] = [
@@ -240,6 +240,7 @@ export function SetupPage() {
   const [fees, setFees] = useState({ ...DEFAULT_FEES });
   const [slip, setSlip] = useState<number | ''>(2);
   const [funding, setFunding] = useState(true);
+  const [duka, setDuka] = usePersistent('setup.dukascopy', true);
   const [defFunding, setDefFunding] = useState<number | ''>(0.01);
   const [intrabar, setIntrabar] = useState<'auto' | 'pessimistic'>('auto');
   const [opt, setOpt] = useState({ ...DEFAULT_OPTION_MODEL });
@@ -290,6 +291,7 @@ export function SetupPage() {
       fees,
       slippageBps: Number(slip) || 0,
       fundingEnabled: funding,
+      dukascopy: duka,
       defaultFundingRate: (Number(defFunding) || 0) / 100,
       options: opt,
       intrabar,
@@ -344,6 +346,16 @@ export function SetupPage() {
               <Select label="Источник" value={provider} onChange={setProvider} options={PROVIDER_LIST.map((p) => ({ value: p.id, label: p.label }))} />
             </div>
             <div className="text-[11px] text-dim -mt-1">{PROVIDER_LIST.find((p) => p.id === provider)?.note}. Если источник недоступен, автоматически используется следующий.</div>
+            {provider !== 'synthetic' && (
+              <Check checked={duka} onChange={setDuka}>
+                <span
+                  className="text-[12px]"
+                  title="Yahoo отдаёт часовые свечи акций только за 2 года, а 5–30 мин — за 60 дней. Более старую внутридневную историю загрузчик берёт из архива Dukascopy — он отвечает медленно (15–25 с на файл). Без него для старых периодов будут дневные свечи Yahoo."
+                >
+                  Старая внутридневная история акций, индексов и сырья — с Dukascopy (медленно)
+                </span>
+              </Check>
+            )}
             <div className="flex gap-1.5 flex-wrap">
               {PRESETS.map((p) => (
                 <button key={p.key} className={cx('chip border border-line2', preset === p.key && 'active')} onClick={() => applyPreset(p.key)}>

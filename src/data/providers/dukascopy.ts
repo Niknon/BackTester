@@ -1,4 +1,5 @@
 import { apiGetBinary, pool, sleep } from '../http';
+import { idbGet, idbSet } from '../cache';
 import { DAY, HOUR, intervalMs } from '../intervals';
 import type { Candle, IntervalKey } from '../types';
 import { getAsset } from '../assets';
@@ -111,26 +112,126 @@ function bucket(rows: Candle[], dt: number, start: number, end: number): Candle[
   return out;
 }
 
-/** Подряд не загрузившиеся файлы и пауза, на которую прекращаем запросы к перегруженному серверу. */
-let failStreak = 0;
-let downUntil = 0;
+/** Пауза, на которую прекращаем запросы к недоступному серверу (или загрузку с него пропустили). */
+const DOWN_KEY = 'duka.downUntil';
+let downUntil = (() => {
+  try {
+    return Number(globalThis.localStorage?.getItem(DOWN_KEY)) || 0;
+  } catch {
+    return 0;
+  }
+})();
+function setDown(ms: number) {
+  downUntil = Date.now() + ms;
+  try {
+    globalThis.localStorage?.setItem(DOWN_KEY, String(downUntil));
+  } catch {
+    /* без localStorage — только на время работы страницы */
+  }
+}
 let skipCtl = new AbortController();
+/** Когда последний раз пришёл файл: если долго ни одного — сервер считаем недоступным. */
+let lastOk = 0;
 
-/** Dukascopy сейчас недоступен (ограничение частоты) или загрузку с него пропустили. */
+/** Dukascopy сейчас недоступен или загрузку с него пропустили. */
 export function dukascopyDown() {
   return Date.now() < downUntil;
 }
 
 /** Пропустить загрузку с Dukascopy (кнопка на экране загрузки): дальше — свечи основного источника. */
 export function skipDukascopy() {
-  downUntil = Date.now() + 30 * 60_000;
+  setDown(30 * 60_000);
   skipCtl.abort();
   skipCtl = new AbortController();
 }
 
+/**
+ * Сервер архива (2026 г.) отвечает медленно — первый байт файла через 10–25 с, — а при нескольких запросах
+ * сразу начинает отвечать 503 «No server is available» на всё подряд, и так минутами. Поэтому одновременных
+ * запросов — от 1 до 3: после отказа (503/429/обрыв/таймаут) — один и пауза, после серии удачных — на один больше.
+ * Таймаут попытки — с запасом (прокси ждёт 60 с). От архива отказываемся, только если ни одного файла
+ * не пришло за GIVE_UP_MS, и тогда не трогаем его 10 минут (и после перезагрузки страницы тоже).
+ */
+const WORKERS = 3;
+const FILE_TIMEOUT = 55_000;
+const GIVE_UP_MS = 4 * 60_000;
+const MAX_ATTEMPTS = 6;
+let limit = 2;
+let active = 0;
+let okStreak = 0;
+/** Последний отказ сервера: с какой паузой повторяем (для сообщения на экране загрузки). */
+let lastTrouble = { at: 0, wait: 0, status: '' };
+
+async function acquire(signal?: AbortSignal) {
+  while (active >= limit) {
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+    await sleep(250);
+  }
+  active++;
+}
+
+/**
+ * Минутные файлы — по одному на день (5 лет — ~1250 запросов, при таком сервере — часы), поэтому для интервалов
+ * меньше часа они берутся только за последние DUKA_MINUTE_DAYS дней, а более старая история — часовыми
+ * свечами из месячных файлов (60 запросов на 5 лет).
+ */
+export const DUKA_MINUTE_DAYS = 120;
+
 interface FileJob {
   path: string;
+  /** начало периода файла (время свечей — смещение от него) */
   base: number;
+  /** свечи файла, которые берём: [from, to) */
+  from: number;
+  to: number;
+}
+
+const FAILED = Symbol('failed');
+
+/** Файл архива: из кэша браузера или с сервера. Каждый файл — за завершённый период, кэшируется навсегда. */
+async function getFile(j: FileJob, t0: number, signal?: AbortSignal): Promise<Uint8Array | null | typeof FAILED> {
+  const key = `duka|${j.path}`;
+  const cached = await idbGet<{ b: Uint8Array | null }>('klines', key);
+  if (cached) return cached.b;
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    if (dukascopyDown()) return FAILED;
+    const skip = skipCtl.signal;
+    const sig = signal ? AbortSignal.any([signal, skip]) : skip;
+    let waitMs = 0;
+    await acquire(sig).catch(() => null);
+    if (sig.aborted) {
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+      return FAILED;
+    }
+    try {
+      const b = await apiGetBinary(PROXY, DIRECT, j.path, sig, 0, FILE_TIMEOUT);
+      lastOk = Date.now();
+      if (++okStreak >= 4 && limit < WORKERS) {
+        limit++;
+        okStreak = 0;
+      }
+      await idbSet('klines', key, { b });
+      return b;
+    } catch (e: any) {
+      if (signal?.aborted) throw e;
+      if (e?.status === 403) throw e;
+      if (skip.aborted) return FAILED;
+      // сервер перегружен: дальше по одному запросу
+      limit = 1;
+      okStreak = 0;
+      // давно ни одного файла — сервер недоступен: дальше берём свечи основного источника
+      if (Date.now() - Math.max(lastOk, t0) > GIVE_UP_MS) {
+        setDown(10 * 60_000);
+        return FAILED;
+      }
+      waitMs = Math.min(30_000, 3000 * 2 ** attempt) * (0.7 + Math.random() * 0.6);
+      lastTrouble = { at: Date.now(), wait: waitMs, status: e?.status ? String(e.status) : String(e?.message || 'обрыв') };
+    } finally {
+      active--;
+    }
+    await sleep(waitMs);
+  }
+  return FAILED;
 }
 
 export const dukascopyProvider: DataProvider = {
@@ -149,50 +250,65 @@ export const dukascopyProvider: DataProvider = {
       for (let d = Math.floor(a / DAY) * DAY; d < b; d += DAY) {
         if (new Date(d).getUTCDay() === 6) continue; // суббота — торгов нет
         const x = new Date(d);
-        jobs.push({ path: `/datafeed/${inst.file}/${x.getUTCFullYear()}/${pad(x.getUTCMonth())}/${pad(x.getUTCDate())}/BID_candles_min_1.bi5`, base: d });
+        jobs.push({ path: `/datafeed/${inst.file}/${x.getUTCFullYear()}/${pad(x.getUTCMonth())}/${pad(x.getUTCDate())}/BID_candles_min_1.bi5`, base: d, from: Math.max(a, d), to: Math.min(b, d + DAY) });
       }
     };
-    if (dt >= HOUR) {
-      // часовые свечи: файл на месяц; текущий (незавершённый) месяц — из минутных файлов по дням
-      const s = new Date(from);
-      for (let y = s.getUTCFullYear(), m = s.getUTCMonth(); Date.UTC(y, m, 1) < to; m === 11 ? (y++, (m = 0)) : m++) {
+    // часовые свечи: файл на месяц; текущий (незавершённый) месяц — из минутных файлов по дням
+    const monthJobs = (a: number, b: number) => {
+      const s = new Date(a);
+      for (let y = s.getUTCFullYear(), m = s.getUTCMonth(); Date.UTC(y, m, 1) < b; m === 11 ? (y++, (m = 0)) : m++) {
         const ms = Date.UTC(y, m, 1);
         const me = Date.UTC(y, m + 1, 1);
-        if (me > today) dayJobs(Math.max(ms, from), to);
-        else jobs.push({ path: `/datafeed/${inst.file}/${y}/${pad(m)}/BID_candles_hour_1.bi5`, base: ms });
+        if (me > today) dayJobs(Math.max(ms, a), b);
+        else jobs.push({ path: `/datafeed/${inst.file}/${y}/${pad(m)}/BID_candles_hour_1.bi5`, base: ms, from: Math.max(a, ms), to: Math.min(b, me) });
       }
-    } else dayJobs(from, to);
+    };
+    if (dt >= HOUR) monthJobs(from, to);
+    else {
+      const minuteFrom = Math.max(from, today - DUKA_MINUTE_DAYS * DAY);
+      if (from < minuteFrom) monthJobs(from, minuteFrom);
+      if (minuteFrom < to) dayJobs(minuteFrom, to);
+    }
+    const t0 = Date.now();
     let done = 0;
     let failed = 0;
-    if (jobs.length) opts.onProgress?.(0, jobs.length); // сразу показываем, что идёт загрузка с Dukascopy
-    const parts = await pool(
-      jobs,
-      2,
-      async (j) => {
-        let rows: Candle[] = [];
-        if (dukascopyDown()) failed++; // сервер не отвечает или загрузку пропустили — дальше не ждём
-        else {
-          // отдельная отмена: «Пропустить Dukascopy» прерывает только эти запросы, а не всю загрузку
-          const skip = skipCtl.signal;
-          const signal = opts.signal ? AbortSignal.any([opts.signal, skip]) : skip;
-          try {
-            const buf = await apiGetBinary(PROXY, DIRECT, j.path, signal);
-            rows = buf ? parseBi5(buf, j.base, inst.scale) : [];
-            failStreak = 0;
-          } catch (e: any) {
-            if (opts.signal?.aborted) throw e;
-            if (e?.status === 403) throw e;
-            failed++; // сервер ограничивает частоту — пропуск заполнится из основного источника
-            // несколько файлов подряд не загрузились — сервер перегружен, на время прекращаем попытки
-            if (++failStreak >= 3) downUntil = Date.now() + 10 * 60_000;
+    let fetched = 0;
+    const progress = () => {
+      const left = jobs.length - done;
+      const rate = fetched > 0 ? (Date.now() - t0) / fetched : 0;
+      const eta = rate && left > WORKERS ? ` · осталось ~${Math.max(1, Math.round((left * rate) / 60_000))} мин` : '';
+      const quiet = Math.round((Date.now() - Math.max(lastOk, t0)) / 1000);
+      const trouble =
+        Date.now() - lastTrouble.at < 60_000
+          ? `\nСервер архива перегружен (${lastTrouble.status}) — повторяем по одному запросу; без ответа ${quiet} с, после ${GIVE_UP_MS / 60_000} мин без ответа загрузка продолжится без архива.`
+          : '';
+      opts.onProgress?.(done, jobs.length, `Dukascopy: ${symbol} — файлы архива ${done} из ${jobs.length}${eta}. Сервер отвечает медленно (10–25 с на файл), скачанное сохраняется.${trouble}`);
+    };
+    // пока ждём ответа, сообщение о перегрузке и времени без ответа должно обновляться
+    const ticker = setInterval(() => jobs.length && progress(), 5000);
+    if (jobs.length) progress(); // сразу показываем, что идёт загрузка с Dukascopy
+    let parts: Candle[][];
+    try {
+      parts = await pool(
+        jobs,
+        WORKERS,
+        async (j) => {
+          const b = await getFile(j, t0, opts.signal);
+          done++;
+          if (b === FAILED) {
+            failed++; // пропуск заполнится из основного источника
+            progress();
+            return [] as Candle[];
           }
-          await sleep(250); // Dukascopy ограничивает частоту запросов
-        }
-        opts.onProgress?.(++done, jobs.length);
-        return rows;
-      },
-      opts.signal,
-    );
+          fetched++;
+          progress();
+          return b ? parseBi5(b, j.base, inst.scale).filter((c) => c.t >= j.from && c.t < j.to) : [];
+        },
+        opts.signal,
+      );
+    } finally {
+      clearInterval(ticker);
+    }
     // даже если не загрузилось ничего, не прерываем загрузку остальных кусков: пропуски заполнит основной источник
     const out: Klines = bucket(parts.flat(), dt, start, end);
     if (failed) out.partial = failed;

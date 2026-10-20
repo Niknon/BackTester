@@ -35,6 +35,7 @@ async function loadSymbolInto(market: MarketData, cfg: SessionConfig, symbol: st
     end: cfg.end,
     signal,
     fallback: true,
+    archive: cfg.dukascopy !== false,
     onProgress: (d, t, m) => setProgress({ message: m ?? symbol, done: d, total: t }),
   });
   if (res.errors.length) setProgress({ errors: [...(useSession.getState().progress?.errors ?? []), ...res.errors] });

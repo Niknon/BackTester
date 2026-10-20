@@ -19,8 +19,27 @@ function qs(params: Record<string, string | number | undefined>) {
 
 const proxyAvailable: Record<string, boolean | undefined> = {};
 
-async function fetchJson(url: string, signal?: AbortSignal): Promise<any> {
-  const res = await fetch(url, { signal, headers: { accept: 'application/json' } });
+/** Запрос, который не может висеть дольше timeoutMs (зависший источник = «бесконечная загрузка»). */
+async function fetchWithTimeout(url: string, init: RequestInit, signal: AbortSignal | undefined, timeoutMs: number): Promise<Response> {
+  const ctl = new AbortController();
+  const onAbort = () => ctl.abort();
+  signal?.addEventListener('abort', onAbort);
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: ctl.signal });
+  } catch (e: any) {
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+    // 504: как «шлюз не дождался ответа» — повторяем, а прокси при этом считаем рабочим
+    if (e?.name === 'AbortError') throw new HttpError(`источник не ответил за ${Math.round(timeoutMs / 1000)} с`, 504);
+    throw e;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
+  }
+}
+
+async function fetchJson(url: string, signal?: AbortSignal, timeoutMs = 30_000): Promise<any> {
+  const res = await fetchWithTimeout(url, { headers: { accept: 'application/json' } }, signal, timeoutMs);
   const text = await res.text();
   if (!res.ok) throw new HttpError(`HTTP ${res.status}: ${text.slice(0, 200)}`, res.status);
   try {

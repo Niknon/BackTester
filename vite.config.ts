@@ -15,6 +15,9 @@ const proxy = Object.fromEntries(
         target,
         changeOrigin: true,
         secure: true,
+        // зависший источник не держит запрос бесконечно (браузер получит ошибку и повторит)
+        proxyTimeout: 60_000,
+        timeout: 90_000,
         rewrite: (p: string) => p.slice(prefix.length),
         // часть API (Yahoo) отвечает 429/403 на запросы с Origin/Referer localhost или без «браузерного» User-Agent
         configure: (px: any) =>
