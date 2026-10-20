@@ -156,6 +156,12 @@ export function skipDukascopy() {
 const WORKERS = 3;
 const FILE_TIMEOUT = 55_000;
 const GIVE_UP_MS = 4 * 60_000;
+/**
+ * Сколько ждать архив на один символ. Когда сервер «штрафует» адрес, файлы приходят раз в минуту-две, и полная
+ * загрузка заняла бы час. После бюджета оставшиеся файлы пропускаются (заполнятся свечами основного источника),
+ * а скачанное остаётся в кэше — следующая загрузка докачает недостающее.
+ */
+export const DUKA_TIME_BUDGET = 5 * 60_000;
 const MAX_ATTEMPTS = 6;
 let limit = 2;
 let active = 0;
@@ -198,7 +204,7 @@ async function getFile(j: FileJob, t0: number, signal?: AbortSignal): Promise<Ui
   const cached = await idbGet<{ b: Uint8Array | null }>('klines', key);
   if (cached) return cached.b;
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-    if (dukascopyDown()) return FAILED;
+    if (dukascopyDown() || Date.now() - t0 > DUKA_TIME_BUDGET) return FAILED;
     const skip = skipCtl.signal;
     const sig = signal ? AbortSignal.any([signal, skip]) : skip;
     const got = await acquire(sig).then(
@@ -287,9 +293,14 @@ export const dukascopyProvider: DataProvider = {
       const quiet = Math.round((Date.now() - Math.max(lastOk, t0)) / 1000);
       const trouble =
         Date.now() - lastTrouble.at < 60_000
-          ? `\nСервер архива перегружен (${lastTrouble.status}) — повторяем по одному запросу; без ответа ${quiet} с, после ${GIVE_UP_MS / 60_000} мин без ответа загрузка продолжится без архива.`
+          ? `\nСервер архива перегружен (${lastTrouble.status}) — повторяем по одному запросу, с паузами; без ответа ${quiet} с.`
           : '';
-      opts.onProgress?.(done, jobs.length, `Dukascopy: ${symbol} — файлы архива ${done} из ${jobs.length}${eta}. Сервер отвечает медленно (10–25 с на файл), скачанное сохраняется.${trouble}`);
+      const budget = Math.max(0, Math.ceil((DUKA_TIME_BUDGET - (Date.now() - t0)) / 60_000));
+      opts.onProgress?.(
+        done,
+        jobs.length,
+        `Dukascopy: ${symbol} — файлы архива ${done} из ${jobs.length}${eta}. Архив ждём ещё не больше ${budget} мин, дальше — без него; скачанное сохраняется и при следующей загрузке докачается.${trouble}`,
+      );
     };
     // пока ждём ответа, сообщение о перегрузке и времени без ответа должно обновляться
     const ticker = setInterval(() => jobs.length && progress(), 5000);

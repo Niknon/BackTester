@@ -8,7 +8,7 @@ import { okxProvider } from './providers/okx';
 import { binanceProvider } from './providers/binance';
 import { syntheticProvider } from './providers/synthetic';
 import { allSplits, fetchSplits, yahooDaily, yahooIntradayFrom, yahooProvider, type Split } from './providers/yahoo';
-import { DUKA_MINUTE_DAYS, dukaInstrument, dukascopyDown, dukascopyProvider } from './providers/dukascopy';
+import { DUKA_MINUTE_DAYS, DUKA_TIME_BUDGET, dukaInstrument, dukascopyDown, dukascopyProvider } from './providers/dukascopy';
 import { getAsset } from './assets';
 import { DAY, HOUR } from './intervals';
 
@@ -375,7 +375,7 @@ async function withIntradayHistory(o: LoadOptions, best: { series: SeriesData; p
   );
   if (stats.partial)
     errors.push(
-      `Dukascopy: ${stats.partial} файл(ов) истории ${o.symbol} не загрузились (сервер ограничивает частоту запросов)` +
+      `Dukascopy: ${stats.partial} файл(ов) истории ${o.symbol} не загрузились (сервер ограничивает частоту запросов, архив ждём не больше ${DUKA_TIME_BUDGET / 60_000} мин)` +
         (filled ? ` — пропуски заполнены свечами ${PROVIDERS[best.provider].label}` : '') +
         '. Скачанные файлы сохранены в кэше — при следующей загрузке докачаются только недостающие',
     );
