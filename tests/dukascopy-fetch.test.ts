@@ -45,6 +45,30 @@ describe('Dukascopy: какие файлы запрашиваются', () => {
   }, 30_000);
 });
 
+describe('Dukascopy: пауза после отказа — общая для всех запросов', () => {
+  it('после 503 ни один запрос не уходит, пока пауза не кончилась', async () => {
+    const times: number[] = [];
+    let refusedAt = 0;
+    vi.stubGlobal('fetch', async (url: string) => {
+      const now = Date.now();
+      times.push(now);
+      // первый запрос — отказ, остальные — пусто (404)
+      if (times.length === 1) {
+        refusedAt = now;
+        await new Promise((r) => setTimeout(r, 50));
+        return new Response('x', { status: 503 });
+      }
+      void url;
+      return new Response('x', { status: 404 });
+    });
+    await dukascopyProvider.fetchKlines('AMZNUSDT', '1h', Date.UTC(2022, 0, 1), Date.UTC(2022, 6, 1));
+    // запросы, отправленные параллельно с отказавшим (до его ответа), допустимы; после ответа — только по истечении паузы
+    const after = times.filter((t) => t > refusedAt + 60);
+    expect(after.length).toBeGreaterThan(0);
+    expect(Math.min(...after) - (refusedAt + 50)).toBeGreaterThanOrEqual(1300); // 2 с × (0.7…1.3)
+  }, 30_000);
+});
+
 describe('Dukascopy: кэш по файлам', () => {
   it('скачанные файлы не запрашиваются повторно, недостающие — докачиваются', async () => {
     vi.resetModules();

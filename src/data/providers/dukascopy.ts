@@ -148,7 +148,8 @@ export function skipDukascopy() {
 /**
  * Сервер архива (2026 г.) отвечает медленно — первый байт файла через 10–25 с, — а при нескольких запросах
  * сразу начинает отвечать 503 «No server is available» на всё подряд, и так минутами. Поэтому одновременных
- * запросов — от 1 до 3: после отказа (503/429/обрыв/таймаут) — один и пауза, после серии удачных — на один больше.
+ * запросов — от 1 до 3: после отказа (503/429/обрыв/таймаут) — один, и перед ним общая пауза (2, 4, 8… до 30 с),
+ * после серии удачных — на один больше.
  * Таймаут попытки — с запасом (прокси ждёт 60 с). От архива отказываемся, только если ни одного файла
  * не пришло за GIVE_UP_MS, и тогда не трогаем его 10 минут (и после перезагрузки страницы тоже).
  */
@@ -159,11 +160,14 @@ const MAX_ATTEMPTS = 6;
 let limit = 2;
 let active = 0;
 let okStreak = 0;
+/** Отказы сервера подряд и общая пауза после них: во время паузы не уходит ни один запрос (иначе адрес не выходит из «штрафа»). */
+let troubleStreak = 0;
+let coolUntil = 0;
 /** Последний отказ сервера: с какой паузой повторяем (для сообщения на экране загрузки). */
 let lastTrouble = { at: 0, wait: 0, status: '' };
 
 async function acquire(signal?: AbortSignal) {
-  while (active >= limit) {
+  while (active >= limit || Date.now() < coolUntil) {
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
     await sleep(250);
   }
@@ -197,15 +201,18 @@ async function getFile(j: FileJob, t0: number, signal?: AbortSignal): Promise<Ui
     if (dukascopyDown()) return FAILED;
     const skip = skipCtl.signal;
     const sig = signal ? AbortSignal.any([signal, skip]) : skip;
-    let waitMs = 0;
-    await acquire(sig).catch(() => null);
-    if (sig.aborted) {
+    const got = await acquire(sig).then(
+      () => true,
+      () => false,
+    );
+    if (!got) {
       if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
       return FAILED;
     }
     try {
       const b = await apiGetBinary(PROXY, DIRECT, j.path, sig, 0, FILE_TIMEOUT);
       lastOk = Date.now();
+      troubleStreak = 0;
       if (++okStreak >= 4 && limit < WORKERS) {
         limit++;
         okStreak = 0;
@@ -216,20 +223,20 @@ async function getFile(j: FileJob, t0: number, signal?: AbortSignal): Promise<Ui
       if (signal?.aborted) throw e;
       if (e?.status === 403) throw e;
       if (skip.aborted) return FAILED;
-      // сервер перегружен: дальше по одному запросу
+      // сервер перегружен: дальше по одному запросу и общая пауза перед следующим
       limit = 1;
       okStreak = 0;
+      const waitMs = Math.min(30_000, 2000 * 2 ** Math.min(troubleStreak++, 4)) * (0.7 + Math.random() * 0.6);
+      coolUntil = Math.max(coolUntil, Date.now() + waitMs);
       // давно ни одного файла — сервер недоступен: дальше берём свечи основного источника
       if (Date.now() - Math.max(lastOk, t0) > GIVE_UP_MS) {
         setDown(10 * 60_000);
         return FAILED;
       }
-      waitMs = Math.min(30_000, 3000 * 2 ** attempt) * (0.7 + Math.random() * 0.6);
       lastTrouble = { at: Date.now(), wait: waitMs, status: e?.status ? String(e.status) : String(e?.message || 'обрыв') };
     } finally {
       active--;
     }
-    await sleep(waitMs);
   }
   return FAILED;
 }
