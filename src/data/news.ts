@@ -227,6 +227,22 @@ interface SecFilings {
   acceptanceDateTime: string[];
   form: string[];
   items: string[];
+  primaryDocument?: string[];
+}
+
+/**
+ * Иностранные эмитенты (Shopify и др.) публикуют квартальные результаты формой 6-K без номеров пунктов.
+ * Узнаём такие по имени основного документа: «q42015pressrelease.htm», «q320166kwrapper.htm», «…-results…».
+ */
+const RESULTS_6K = /(^|[^a-z0-9])q[1-4]|quarter|results|earnings/i;
+/** …но не итоги голосования и материалы собрания акционеров */
+const NOT_RESULTS_6K = /vot|agm|meeting|circular|proxy/i;
+
+/** Подача в SEC с квартальными результатами: 8-K п. 2.02 или 6-K иностранного эмитента с отчётом о результатах. */
+export function isResultsFiling(form: string, items: string, doc: string): boolean {
+  if (form === '8-K') return /(^|,)2\.02(,|$)/.test(items);
+  if (form === '6-K') return RESULTS_6K.test(doc) && !NOT_RESULTS_6K.test(doc);
+  return false;
 }
 
 /** Отчёты о прибыли: 8-K с пунктом 2.02 «Results of Operations» — публикуется в день релиза. */
@@ -236,7 +252,7 @@ async function fetchEarnings(symbol: string, from: number, to: number, signal?: 
   const ticker = spec.yahoo.replace(/=F$|^\^/, '');
   const cik = await secCik(ticker, signal);
   if (!cik) return [];
-  const key = `news|sec|${cik}`;
+  const key = `news|sec2|${cik}`;
   let cached = await idbGet<{ fetchedAt: number; rows: { t: number; at: number }[] }>('meta', key);
   // список подач обновляем раз в сутки (появляются новые отчёты)
   if (!cached || Date.now() - cached.fetchedAt > DAY) {
@@ -251,7 +267,7 @@ async function fetchEarnings(symbol: string, from: number, to: number, signal?: 
     const rows: { t: number; at: number }[] = [];
     for (const l of lists)
       for (let i = 0; i < (l.form?.length ?? 0); i++) {
-        if (l.form[i] !== '8-K' || !/(^|,)2\.02(,|$)/.test(l.items[i] ?? '')) continue;
+        if (!isResultsFiling(l.form[i], l.items[i] ?? '', l.primaryDocument?.[i] ?? '')) continue;
         const at = Date.parse(l.acceptanceDateTime[i]);
         if (Number.isFinite(at)) rows.push({ t: earningsTime(at), at });
       }

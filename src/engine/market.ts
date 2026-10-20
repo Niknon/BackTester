@@ -1,8 +1,8 @@
 import { intervalMs } from '../data/intervals';
 import type { FundingPoint, IntervalKey, ProviderId, SeriesData } from '../data/types';
 import { lowerBound } from '../data/types';
-import { computeEventVol, computeHourProfile, computeRealizedVol, reportSpans, type DvolSeries, type EventVol, type RealizedVol } from '../data/volatility';
-import type { HourProfile } from '../data/intervals';
+import { computeEventVol, computeHourProfile, computeRealizedVol, detectHolidays, reportSpans, type DvolSeries, type EventVol, type RealizedVol } from '../data/volatility';
+import type { Holidays, HourProfile } from '../data/intervals';
 import { optionClockOf } from '../data/assets';
 
 /**
@@ -17,6 +17,8 @@ export class MarketData {
   readonly rv = new Map<string, RealizedVol>();
   /** профиль активности по часам суток — для «рабочих» часов опционов на акции/сырьё */
   readonly hourProfile = new Map<string, HourProfile | null>();
+  /** праздники биржи (будни без торгов) — у акций и сырья время опциона в эти дни не идёт */
+  readonly holidays = new Map<string, Holidays | null>();
   readonly dvol = new Map<string, DvolSeries>();
   /** отчёты компаний (время выхода, UTC) — для опционов на акции */
   readonly reports = new Map<string, number[]>();
@@ -60,10 +62,12 @@ export class MarketData {
     const clock = optionClockOf(symbol);
     const { spans, at, mask } = reportSpans(s, this.reports.get(symbol) ?? []);
     const profile = clock === 'business' ? computeHourProfile(s, mask) : null;
+    const holidays = clock === 'business' ? detectHolidays(s) : null;
     this.hourProfile.set(symbol, profile);
-    const rv = computeRealizedVol(s, clock, profile, mask);
+    this.holidays.set(symbol, holidays);
+    const rv = computeRealizedVol(s, clock, profile, mask, holidays);
     this.rv.set(symbol, rv);
-    if (spans.length) this.events.set(symbol, computeEventVol(s, spans, at, rv, profile, clock));
+    if (spans.length) this.events.set(symbol, computeEventVol(s, spans, at, rv, profile, clock, holidays));
     else this.events.delete(symbol);
     this.ptr.delete(symbol);
   }

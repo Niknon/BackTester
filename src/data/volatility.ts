@@ -1,18 +1,27 @@
 import { apiGet } from './http';
-import { DAY, HOUR, businessMs, intervalMs, type HourProfile } from './intervals';
+import { DAY, HOUR, businessMs, intervalMs, type Holidays, type HourProfile } from './intervals';
 import { lowerBound, type SeriesData } from './types';
 
 /**
- * Реализованная волатильность (годовая) по часовым лог-доходностям.
- * rv7 / rv30 — скользящие окна 7 и 30 дней. Значение в момент t использует
+ * Реализованная волатильность (годовая) по часовым лог-доходностям. Значение в момент t использует
  * только данные ДО t (без заглядывания в будущее).
+ * rv7 / rv30 — скользящие окна 7 и 30 дней (для справки на экране и режима DVOL).
+ * fast / slow — экспоненциально сглаженные оценки: текущий уровень (полупериод ~11 торговых дней, как RiskMetrics
+ * λ = 0.94) и долгосрочный (полупериод ~полгода). По ним строится IV: окно в 5 дневных доходностей слишком
+ * шумное — в тихую неделю IV NVDA падала до 8%, и покупка опционов «дешёвой» IV давала систематическую прибыль.
  */
 export interface RealizedVol {
   t: Float64Array; // часовые метки
   rv7: Float64Array;
   rv30: Float64Array;
+  fast: Float64Array;
+  slow: Float64Array;
   length: number;
 }
+
+/** Полупериоды сглаживания волатильности, в рабочих (или календарных у крипты) днях. */
+export const VOL_FAST_HALF_LIFE_DAYS = 11;
+export const VOL_SLOW_HALF_LIFE_DAYS = 126;
 
 const ANNUAL_HOURS = 24 * 365;
 /** Рабочих часов в году (пн–пт круглосуточно): годовая волатильность по будням сопоставима с календарной. */
@@ -61,6 +70,8 @@ export function computeRealizedVol(
   profile: HourProfile | null = null,
   /** свечи реакции на отчёты: их доходность и время в волатильность не входят — скачок оценивается отдельно */
   skip: Uint8Array | null = null,
+  /** праздники биржи: в эти дни время не идёт */
+  holidays: Holidays | null = null,
 ): RealizedVol {
   // выборка цен закрытия на часовой сетке (или по барам, если бар > 1ч)
   const times: number[] = [];
@@ -93,9 +104,30 @@ export function computeRealizedVol(
     if (excl[i]) continue; // r2 = 0 и время 0: интервал с отчётом просто выпадает из окна
     const r = Math.log(closes[i] / closes[i - 1]);
     r2[i] = Number.isFinite(r) ? r * r : 0;
-    const span = clock === 'business' ? businessMs(t[i - 1], t[i], profile) : t[i] - t[i - 1];
+    const span = clock === 'business' ? businessMs(t[i - 1], t[i], profile, holidays) : t[i] - t[i - 1];
     hoursPer[i] = Math.max(clock === 'business' ? 0.01 : 1, span / HOUR);
   }
+  const annual = clock === 'business' ? ANNUAL_BUSINESS_HOURS : ANNUAL_HOURS;
+  // экспоненциальное сглаживание по времени (выборка неравномерная: ночь, выходные, пропуски)
+  const ewma = (halfLifeDays: number, out: Float64Array) => {
+    const tau = (halfLifeDays * 24) / Math.LN2; // в часах
+    let sum = 0;
+    let hrs = 0;
+    out[0] = NaN;
+    for (let i = 1; i < n; i++) {
+      if (hoursPer[i] > 0) {
+        const decay = Math.exp(-hoursPer[i] / tau);
+        sum = sum * decay + r2[i];
+        hrs = hrs * decay + hoursPer[i];
+      }
+      // пока истории меньше трёх полупериодов (и меньше 20 дней) — оценки нет
+      out[i] = hrs >= Math.min(20 * 24, tau * 0.5) ? Math.sqrt((sum / hrs) * annual) : NaN;
+    }
+  };
+  const fast = new Float64Array(n);
+  const slow = new Float64Array(n);
+  ewma(VOL_FAST_HALF_LIFE_DAYS, fast);
+  ewma(VOL_SLOW_HALF_LIFE_DAYS, slow);
   const roll = (windowHours: number, out: Float64Array) => {
     let sum = 0;
     let hrs = 0;
@@ -114,10 +146,10 @@ export function computeRealizedVol(
   };
   roll(24 * 7, rv7);
   roll(24 * 30, rv30);
-  return { t, rv7, rv30, length: n };
+  return { t, rv7, rv30, fast, slow, length: n };
 }
 
-export function realizedVolAt(rv: RealizedVol | undefined, time: number): { rv7: number; rv30: number } | null {
+export function realizedVolAt(rv: RealizedVol | undefined, time: number): { rv7: number; rv30: number; fast: number; slow: number } | null {
   if (!rv || !rv.length) return null;
   let i = lowerBound(rv.t, rv.length, time + 1) - 1;
   if (i < 0) return null;
@@ -126,7 +158,28 @@ export function realizedVolAt(rv: RealizedVol | undefined, time: number): { rv7:
   const a = rv.rv7[i];
   const b = rv.rv30[i];
   if (!Number.isFinite(a) && !Number.isFinite(b)) return null;
-  return { rv7: Number.isFinite(a) ? a : b, rv30: Number.isFinite(b) ? b : a };
+  const rv7 = Number.isFinite(a) ? a : b;
+  const rv30 = Number.isFinite(b) ? b : a;
+  // сглаженные оценки; в начале истории, пока их нет, — окна
+  const f = rv.fast?.[i];
+  const sl = rv.slow?.[i];
+  const fast = Number.isFinite(f) ? f : rv30;
+  const slow = Number.isFinite(sl) ? sl : fast;
+  return { rv7, rv30, fast, slow };
+}
+
+/** Праздники биржи по самим данным: будние дни без единой свечи внутри истории. */
+export function detectHolidays(s: SeriesData): Holidays | null {
+  if (s.length < 2) return null;
+  const days = new Set<number>();
+  for (let i = 0; i < s.length; i++) days.add(Math.floor(s.t[i] / DAY));
+  const out: number[] = [];
+  const last = Math.floor(s.t[s.length - 1] / DAY);
+  for (let d = Math.floor(s.t[0] / DAY) + 1; d < last; d++) {
+    const wd = new Date(d * DAY).getUTCDay();
+    if (wd !== 0 && wd !== 6 && !days.has(d)) out.push(d * DAY);
+  }
+  return out.length ? Float64Array.from(out) : null;
 }
 
 /* ───────────────────────── Отчёты компаний ───────────────────────── */
@@ -208,7 +261,7 @@ export interface EventVol {
   length: number;
 }
 
-export function computeEventVol(s: SeriesData, spans: [number, number][], at: number[], rv: RealizedVol, profile: HourProfile | null, clock: 'calendar' | 'business'): EventVol {
+export function computeEventVol(s: SeriesData, spans: [number, number][], at: number[], rv: RealizedVol, profile: HourProfile | null, clock: 'calendar' | 'business', holidays: Holidays | null = null): EventVol {
   const dt = intervalMs(s.interval);
   const n = spans.length;
   const out: EventVol = { at: Float64Array.from(at), t: new Float64Array(n), done: new Float64Array(n), ratio: new Float64Array(n), move: new Float64Array(n), length: n };
@@ -218,13 +271,14 @@ export function computeEventVol(s: SeriesData, spans: [number, number][], at: nu
     const move = Math.log(s.c[b] / s.c[a - 1]);
     out.move[k] = move;
     const pre = s.t[a - 1] + dt;
-    const vol = realizedVolAt(rv, pre)?.rv30;
+    // масштаб — долгосрочная волатильность (тот же, что при оценке скачка в цене опциона)
+    const vol = realizedVolAt(rv, pre)?.slow;
     if (!Number.isFinite(move) || !vol) {
       out.ratio[k] = NaN;
       return;
     }
     const dayVar = (vol * vol) / (clock === 'business' ? BUSINESS_DAYS : 365);
-    const span = clock === 'business' ? businessMs(pre, out.done[k], profile) : out.done[k] - pre;
+    const span = clock === 'business' ? businessMs(pre, out.done[k], profile, holidays) : out.done[k] - pre;
     out.ratio[k] = (move * move) / dayVar - span / DAY;
   });
   return out;

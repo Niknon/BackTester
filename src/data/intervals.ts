@@ -30,12 +30,33 @@ function weekdayMs(t: number, p?: HourProfile | null) {
   return w * 5 * DAY + (d < 5 ? d * DAY + dayMs(r - d * DAY, p) : 5 * DAY);
 }
 
+/** Праздники биржи: начала суток (UTC) будних дней без торгов, по возрастанию. */
+export type Holidays = Float64Array;
+
 /**
  * Рабочее (будничное, пн–пт UTC) время между a и b, мс. С профилем час торговой сессии «длиннее»
  * ночного: время идёт так, как реально меняется цена (сутки по-прежнему весят 24 часа).
+ * Праздники биржи (holidays) — как выходные: в эти дни цена стоит, и опцион за них не дешевеет.
  */
-export function businessMs(a: number, b: number, profile?: HourProfile | null) {
-  return weekdayMs(b, profile) - weekdayMs(a, profile);
+export function businessMs(a: number, b: number, profile?: HourProfile | null, holidays?: Holidays | null) {
+  let ms = weekdayMs(b, profile) - weekdayMs(a, profile);
+  if (holidays?.length && b > a) {
+    // первый праздник, который может пересекаться с [a, b)
+    let lo = 0;
+    let hi = holidays.length;
+    const from = Math.floor(a / DAY) * DAY;
+    while (lo < hi) {
+      const m = (lo + hi) >>> 1;
+      if (holidays[m] < from) lo = m + 1;
+      else hi = m;
+    }
+    for (let i = lo; i < holidays.length && holidays[i] < b; i++) {
+      const x = Math.max(a, holidays[i]);
+      const y = Math.min(b, holidays[i] + DAY);
+      if (y > x) ms -= weekdayMs(y, profile) - weekdayMs(x, profile);
+    }
+  }
+  return ms;
 }
 
 export interface IntervalDef {

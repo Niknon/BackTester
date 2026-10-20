@@ -154,12 +154,19 @@ function lastFridayOfMonth(y: number, m: number) {
  * Серии экспираций на момент now: 3 ближайшие дневные, 3 недельные (пятницы),
  * 3 месячные (последняя пятница) и для BTC/ETH — 2 квартальные. Все в 08:00 UTC.
  */
-export function listExpiries(now: number, base: string): number[] {
+export function listExpiries(now: number, base: string, business = false): number[] {
   const set = new Set<number>();
   const d0 = new Date(now);
   let day = at8(d0.getUTCFullYear(), d0.getUTCMonth(), d0.getUTCDate());
   if (day <= now) day += DAY;
-  for (let i = 0; i < 3; i++) set.add(day + i * DAY);
+  // дневные — три ближайших дня; у акций и сырья — три ближайших рабочих дня (в выходные экспираций нет,
+  // иначе в четверг вечером «однодневный» опцион оказывался недельным)
+  for (let i = 0, d = day; i < 3; d += DAY) {
+    const wd = new Date(d).getUTCDay();
+    if (business && (wd === 0 || wd === 6)) continue;
+    set.add(d);
+    i++;
+  }
   // пятницы
   let fri = day;
   while (new Date(fri).getUTCDay() !== 5) fri += DAY;
@@ -258,6 +265,9 @@ export function optionQtyStep(S: number): number {
 export interface VolInputs {
   rv7?: number | null;
   rv30?: number | null;
+  /** сглаженная текущая и долгосрочная реализованная волатильность (основа IV) */
+  fast?: number | null;
+  slow?: number | null;
   dvol?: number | null;
   /** отчёты впереди: момент реакции цены (t), выход отчёта (at) и ожидаемый скачок в дневных дисперсиях */
   events?: { t: number; at?: number; ratio: number }[];
@@ -273,7 +283,7 @@ const BUSINESS_DAYS = (365 / 7) * 5;
  */
 export function eventVariance(cfg: OptionModelConfig, inp: VolInputs, now: number, settleAt: number): number {
   if (!inp.events?.length) return 0;
-  const base = cfg.ivSource === 'fixed' ? cfg.fixedIv : (inp.rv30 ?? inp.rv7 ?? cfg.fixedIv) * cfg.ivPremium;
+  const base = cfg.ivSource === 'fixed' ? cfg.fixedIv : (inp.slow ?? inp.rv30 ?? inp.rv7 ?? cfg.fixedIv) * cfg.ivPremium;
   const day = (base * base) / BUSINESS_DAYS;
   let v = 0;
   for (const e of inp.events) {
@@ -290,21 +300,33 @@ export function withEvents(atm: number, T: number, eventVar: number): number {
   return Math.min(100, Math.sqrt(atm * atm + eventVar / T));
 }
 
-/** ATM IV для срока T (лет) — с временной структурой. */
+/** Полупериод возврата волатильности к долгосрочному уровню, лет: всплеск (или затишье) рассасывается примерно за месяц. */
+export const VOL_REVERSION_YEARS = 1 / 12;
+
+/**
+ * ATM IV для срока T (лет) — с временной структурой. По реализованной волатильности: дисперсия до экспирации —
+ * среднее по пути от текущего уровня (fast) к долгосрочному (slow), который рынок ожидает за ~месяц:
+ * σ²(T) = slow² + (fast² − slow²)·(1 − e^(−κT))/(κT). Короткие опционы — почти по текущему уровню, длинные —
+ * ближе к долгосрочному. Так IV не уходит ни в 8%, ни в сотни процентов от одной тихой или бурной недели.
+ */
 export function atmIv(cfg: OptionModelConfig, inp: VolInputs, T: number): number {
   const days = T * 365;
   if (cfg.ivSource === 'fixed') return cfg.fixedIv;
-  let short = inp.rv7 ?? inp.rv30 ?? cfg.fixedIv;
-  let long = inp.rv30 ?? inp.rv7 ?? cfg.fixedIv;
+  let base: number;
   if (cfg.ivSource === 'dvol' && inp.dvol) {
     const ratio = inp.rv7 && inp.rv30 ? Math.sqrt(inp.rv7 / inp.rv30) : 1;
-    long = inp.dvol / cfg.ivPremium; // DVOL уже подразумеваемая — премию не добавляем
-    short = long * Math.min(1.6, Math.max(0.6, ratio));
+    const long = inp.dvol / cfg.ivPremium; // DVOL уже подразумеваемая — премию не добавляем
+    const short = long * Math.min(1.6, Math.max(0.6, ratio));
+    if (days <= 7) base = short;
+    else if (days >= 30) base = long;
+    else base = short + ((days - 7) / 23) * (long - short);
+  } else {
+    const fast = inp.fast ?? inp.rv7 ?? inp.rv30 ?? cfg.fixedIv;
+    const slow = inp.slow ?? inp.rv30 ?? fast;
+    const k = (Math.LN2 / VOL_REVERSION_YEARS) * Math.max(0, T);
+    const w = k > 1e-9 ? (1 - Math.exp(-k)) / k : 1;
+    base = Math.sqrt(Math.max(1e-6, slow * slow + (fast * fast - slow * slow) * w));
   }
-  let base: number;
-  if (days <= 7) base = short;
-  else if (days >= 30) base = long;
-  else base = short + ((days - 7) / 23) * (long - short);
   // очень короткие сроки — лёгкая надбавка (эффект гэпов/событий)
   const shortBump = days < 2 ? 1.05 : 1;
   return Math.max(0.05, Math.min(5, base * cfg.ivPremium * shortBump));
@@ -343,14 +365,14 @@ export type OptionClock = 'calendar' | 'business';
 const BUSINESS_YEAR_MS = (365 / 7) * 5 * DAY;
 
 /** Годы до экспирации по часам опциона: календарные (24/7) или рабочие (без выходных). */
-export function optionYears(expiry: number, now: number, clock: OptionClock = 'calendar', profile?: Float64Array | null) {
+export function optionYears(expiry: number, now: number, clock: OptionClock = 'calendar', profile?: Float64Array | null, holidays?: Float64Array | null) {
   if (clock === 'calendar') return yearsTo(expiry, now);
-  return Math.max(0, businessMs(now, expiry, profile) / BUSINESS_YEAR_MS);
+  return Math.max(0, businessMs(now, expiry, profile, holidays) / BUSINESS_YEAR_MS);
 }
 
 /** Годы до экспирации инструмента — с учётом его часов и момента расчёта на бирже. */
 export function instYears(inst: OptionInstrument, now: number) {
-  return optionYears(inst.settleAt ?? inst.expiry, now, inst.clock, inst.profile);
+  return optionYears(inst.settleAt ?? inst.expiry, now, inst.clock, inst.profile, inst.holidays);
 }
 
 export interface OptionQuote {

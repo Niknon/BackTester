@@ -113,7 +113,8 @@ describe('Торговля опционами', () => {
     expect(ex.main.positions[sym]).toBeUndefined();
     const rec = ex.state.closedPnl.at(-1)!;
     expect(rec.type).toBe('Delivery');
-    const S = bars[8][0];
+    // цена в момент экспирации (08:00) — закрытие свечи 07:00, а не открытие следующей
+    const S = bars[7][3];
     expect(rec.exitPrice).toBeCloseTo(S - 100, 8);
   });
 

@@ -301,7 +301,10 @@ export function pickLegs(ex: Exchange, s: OsSettings, qty: number, underlying = 
   const S = ex.price(underlying);
   const fail = (error: string): PickResult => ({ legs: [], expiry: 0, S, atmIv: 0, error });
   if (!Number.isFinite(S)) return fail('Нет цены базового актива');
-  const expiry = pickExpiry(ex.optionExpiries(base), ex.now, s.dte, s.expiryMode, (e) => ex.settleTime(e));
+  // экспирации, до расчёта которых не осталось торгового времени (акция в пятницу вечером → понедельник 08:00 UTC,
+  // до открытия), — не опционы, а их внутренняя стоимость: такие не берём
+  const live = ex.optionExpiries(base).filter((e) => ex.optionT(underlying, e) * 365 * DAY >= 2 * HOUR);
+  const expiry = pickExpiry(live, ex.now, s.dte, s.expiryMode, (e) => ex.settleTime(e));
   if (!expiry) return fail('Нет подходящей экспирации');
   const chain = ex.optionChain(base, expiry);
   const rows = chain.rows;
@@ -1281,8 +1284,42 @@ export async function runOptionStrategy(market: MarketData, sessionCfg: SessionC
     durationMs: performance.now() - t0,
     bars: total,
     halted,
-    dataWarnings: priceJumpWarnings(market, unders),
+    dataWarnings: [...priceJumpWarnings(market, unders), ...reportCoverageWarnings(market, unders)],
   };
+}
+
+/**
+ * Акции без дат отчётов за часть периода: скачок цены на таком отчёте не заложен в опционы, которые его
+ * захватывают, — покупка опционов перед ним выглядит выгоднее, чем на реальном рынке.
+ */
+export function reportCoverageWarnings(market: MarketData, unders: string[]): string[] {
+  const out: string[] = [];
+  const iso = (t: number) => new Date(t).toISOString().slice(0, 7);
+  for (const u of unders) {
+    const spec = getAsset(u);
+    if (!spec.yahoo || spec.sector === 'etf' || spec.sector === 'index' || spec.sector === 'commodity') continue;
+    if (market.providers.get(u) === 'synthetic') continue;
+    const sr = market.series.get(u);
+    if (!sr?.length) continue;
+    const from = Math.max(market.start, sr.t[0]);
+    const to = Math.min(market.end, sr.t[sr.length - 1]);
+    if (to - from < 120 * DAY) continue;
+    const reps = market.reports.get(u);
+    const base = u.replace(/USDT$/, '');
+    if (!reps) {
+      out.push(`${base}: даты отчётов компании не загрузились (SEC EDGAR) — скачки цены на отчётах не заложены в цены опционов: опционы через отчёт дешевле, чем на реальном рынке. Перезагрузите историю.`);
+      continue;
+    }
+    // промежутки длиннее квартала с запасом без единого отчёта
+    const pts = [from, ...reps.filter((t) => t > from && t < to).sort((a, b) => a - b), to];
+    const gaps: string[] = [];
+    for (let i = 1; i < pts.length; i++) if (pts[i] - pts[i - 1] > 135 * DAY) gaps.push(`${iso(pts[i - 1])}…${iso(pts[i])}`);
+    if (gaps.length)
+      out.push(
+        `${base}: в SEC нет дат отчётов за ${gaps.slice(0, 4).join(', ')}${gaps.length > 4 ? ' и др.' : ''} (у иностранных эмитентов квартальные отчёты не всегда распознаются) — скачки на этих отчётах не заложены в цены опционов, сделки через них выглядят выгоднее реальных.`,
+      );
+  }
+  return out;
 }
 
 /**

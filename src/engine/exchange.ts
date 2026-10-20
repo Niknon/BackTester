@@ -258,7 +258,13 @@ export class Exchange {
     if (!inst) {
       const parsed = parseOptionSymbol(symbol);
       if (!parsed) return null;
-      inst = { ...parsed, clock: optionClockOf(parsed.underlying), profile: this.market.hourProfile.get(parsed.underlying) ?? null, settleAt: this.settleTime(parsed.expiry) };
+      inst = {
+        ...parsed,
+        clock: optionClockOf(parsed.underlying),
+        profile: this.market.hourProfile.get(parsed.underlying) ?? null,
+        holidays: this.market.holidays.get(parsed.underlying) ?? null,
+        settleAt: this.settleTime(parsed.expiry),
+      };
       this.instCache.set(symbol, inst);
     }
     return inst;
@@ -276,20 +282,20 @@ export class Exchange {
 
   /** Годы до экспирации для базового актива: по его часам (будни у акций) и до момента расчёта. */
   optionT(underlying: string, expiry: number, now = this.state.now): number {
-    return optionYears(this.settleTime(expiry), now, optionClockOf(underlying), this.market.hourProfile.get(underlying) ?? null);
+    return optionYears(this.settleTime(expiry), now, optionClockOf(underlying), this.market.hourProfile.get(underlying) ?? null, this.market.holidays.get(underlying) ?? null);
   }
 
   volInputs(underlying: string, now = this.state.now): VolInputs {
     const rv = realizedVolAt(this.market.rv.get(underlying), now);
     const base = underlying.replace(/USDT$/, '');
     const dvol = dvolAt(this.market.dvol.get(base), now);
-    return { rv7: rv?.rv7 ?? null, rv30: rv?.rv30 ?? null, dvol, events: pendingEvents(this.market.events.get(underlying), now) };
+    return { rv7: rv?.rv7 ?? null, rv30: rv?.rv30 ?? null, fast: rv?.fast ?? null, slow: rv?.slow ?? null, dvol, events: pendingEvents(this.market.events.get(underlying), now) };
   }
 
   /** ATM IV экспирации с учётом отчётов, которые она захватывает (на момент at). */
   atmIvFor(underlying: string, expiry: number, at = this.state.now, vol = this.volInputs(underlying, at)): number {
     const settle = this.settleTime(expiry);
-    const T = optionYears(settle, at, optionClockOf(underlying), this.market.hourProfile.get(underlying) ?? null);
+    const T = optionYears(settle, at, optionClockOf(underlying), this.market.hourProfile.get(underlying) ?? null, this.market.holidays.get(underlying) ?? null);
     return withEvents(atmIv(this.config.options, vol, T), T, eventVariance(this.config.options, vol, at, settle));
   }
 
@@ -320,7 +326,7 @@ export class Exchange {
    */
   optionExpiries(base: string): number[] {
     const business = optionClockOf(`${base}USDT`) === 'business';
-    return listExpiries(this.state.now, base).filter((e) => {
+    return listExpiries(this.state.now, base, business).filter((e) => {
       if (this.settleTime(e) <= this.state.now) return false;
       const wd = new Date(e).getUTCDay();
       return !business || (wd !== 0 && wd !== 6);
@@ -1846,11 +1852,11 @@ export class Exchange {
           }
         }
       }
-      // экспирация опционов по цене открытия бара
-      if (this.hasOptionsExpiring(tEnd)) {
-        for (const [sym, i] of bars) this.state.prices[sym] = this.market.series.get(sym)!.o[i];
-        this.settleOptions(tEnd);
-      }
+      // экспирация опционов — по цене в момент расчёта (начало этой свечи), то есть по последнему закрытию.
+      // Не по открытию свечи: у акций открытие дневной свечи — это 13:30 UTC с гэпом за ночь или выходные,
+      // а время опциона считалось до 00:00 — опцион, купленный в пятницу на понедельник, стоил почти ноль
+      // и получал выплату с гэпа выходных. У круглосуточных рынков открытие и прошлое закрытие совпадают.
+      if (this.hasOptionsExpiring(tEnd)) this.settleOptions(tEnd);
       // движение цены
       for (const [sym, i] of bars) this.processBar(sym, i);
       // ценовые алерты (по максимуму/минимуму бара)
