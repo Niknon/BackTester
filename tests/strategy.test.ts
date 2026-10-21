@@ -60,6 +60,19 @@ describe('Лаборатория стратегий', () => {
     expect(res.params.fast).toBe(3);
   });
 
+  it('открытая в конце позиция закрывается по последней цене: сделка в отчёте, комиссия в капитале', async () => {
+    const m = mkMarket({ BTCUSDT: wave(100, 10, 100, 40) }, wave(100, 10, 60, 40));
+    const cfg = mkConfig({ end: m.end });
+    const code = `function onBar(ctx) { if (ctx.position.size === 0) ctx.buy({ percent: 50 }); }`;
+    const res = await runStrategy(m, cfg, { code, symbol: 'BTCUSDT', timeframe: '1h' });
+    expect(res.ok).toBe(true);
+    expect(res.report.trades).toBe(1);
+    const last = res.equity[res.equity.length - 1].v;
+    // всё закрыто: капитал = начальный + закрытый PnL (с обеими комиссиями)
+    expect(last).toBeCloseTo(cfg.initialBalance + res.closed[0].closedPnl, 6);
+    expect(res.closed[0].closeFee).toBeGreaterThan(0);
+  });
+
   it('сетка оптимизации', () => {
     const g = expandGrid({ a: { from: 1, to: 3, step: 1 }, b: { from: 10, to: 20, step: 10 } });
     expect(g.length).toBe(6);

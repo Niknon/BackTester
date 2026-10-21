@@ -126,7 +126,9 @@ export function RebalanceTable({ bot }: { bot: AnyBot }) {
             <th className="text-right">Откл. весов</th>
             <th>Сделки</th>
             <th className="text-right">Комиссия</th>
-            <th className="text-right">Реализ. PnL</th>
+            <th className="text-right" title="Брутто: без комиссий (они в соседнем столбце) и без funding">
+              Реализ. PnL
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -308,7 +310,9 @@ export function BotDetailsModal({ bot, onClose }: { bot: AnyBot | null; onClose:
                     <th className="text-right">Цена</th>
                     <th className="text-right">Объём</th>
                     <th className="text-right">Комиссия</th>
-                    <th className="text-right">Реализ. PnL</th>
+                    <th className="text-right" title="Брутто: без комиссий (они в соседнем столбце) и без funding">
+              Реализ. PnL
+            </th>
                   </tr>
                 </thead>
                 <tbody>

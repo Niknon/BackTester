@@ -115,7 +115,7 @@ export function LegsCompare({ legs }: { legs: CompareLeg[] }) {
   return (
     <div className="h-full flex flex-col">
       <div className="flex items-center gap-2 px-2 py-1 flex-wrap">
-        <span className="text-[11px] text-muted">Динамика активов портфеля (=100 в начале окна) и портфель без ребалансировки за</span>
+        <span className="text-[11px] text-muted">Динамика активов портфеля (=100 в начале окна) и портфель без ребалансировки (1x, без комиссий и funding) за</span>
         {[7, 30, 90, 365].map((d) => (
           <button key={d} className={cx('chip !py-0.5', days === d && 'active')} onClick={() => setDays(d)}>
             {d >= 365 ? '1 год' : `${d}д`}

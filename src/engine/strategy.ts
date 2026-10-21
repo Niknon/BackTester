@@ -371,8 +371,11 @@ export async function runStrategy(market: MarketData, base: SessionConfig, cfg: 
     return r;
   }
   // закрываем позицию по последней цене для честной статистики
-  const pos = ex.main.positions[cfg.symbol];
-  if (pos && pos.size !== 0) ex.closePosition(MAIN, cfg.symbol);
+  ex.afterEnd(() => {
+    for (const o of ex.activeOrders(MAIN)) ex.cancelOrder(o.id, 'Конец периода');
+    const pos = ex.main.positions[cfg.symbol];
+    if (pos && pos.size !== 0) ex.closePosition(MAIN, cfg.symbol);
+  });
   const equity = ex.state.equity.map((p) => ({ t: p.t, v: p.main }));
   for (const p of ex.state.equity) bench.push({ t: p.t, v: p.bench });
   const closedRecs = ex.state.closedPnl.filter((c) => c.accountId === MAIN);

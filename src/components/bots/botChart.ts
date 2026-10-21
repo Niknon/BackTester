@@ -1,5 +1,5 @@
 import { LineStyle } from 'lightweight-charts';
-import { getAsset } from '../../data/assets';
+import { getAsset, priceTick } from '../../data/assets';
 import { gridLevels } from '../../engine/bots/grid';
 import type { AnyBot, GridMode } from '../../engine/bots/types';
 import type { Exchange } from '../../engine/exchange';
@@ -94,7 +94,7 @@ export function previewOverlay(p: BotPreview | null, price: number): ChartOverla
       if (p.upper > 0) lines.push({ id: 'pv:upper', price: p.upper, color: GRID_COLORS.bound, title: 'Верх сетки ⇕', style: LineStyle.Dashed, width: 2, drag: 'custom' });
       return { lines, fit: lines.map((l) => l.price) };
     }
-    const levels = gridLevels(p.lower, p.upper, p.grids, p.mode, getAsset(p.symbol).tickSize);
+    const levels = gridLevels(p.lower, p.upper, p.grids, p.mode, priceTick(p.symbol, p.lower));
     // ордера расставляются относительно цены на момент запуска
     const ref = p.trigger || price;
     const empty = nearest(levels, ref);
@@ -143,8 +143,7 @@ export function liveOverlay(ex: Exchange, bot: AnyBot, symbol: string): ChartOve
   const p = bot.params as any;
   if (bot.type === 'spotGrid' || bot.type === 'futuresGrid') {
     if (symbol !== p.symbol) return { lines: [], fit: [] };
-    const tick = getAsset(p.symbol).tickSize;
-    const levels: number[] = bot.rt.levels ?? gridLevels(p.lower, p.upper, p.grids, p.mode, tick);
+    const levels: number[] = bot.rt.levels ?? gridLevels(p.lower, p.upper, p.grids, p.mode, priceTick(p.symbol, p.lower));
     const bySide = new Map<number, 'Buy' | 'Sell'>();
     const lv: Record<string, number> = bot.rt.lv ?? {};
     for (const o of ex.activeOrders(acc.id, p.symbol)) {

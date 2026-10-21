@@ -9,13 +9,26 @@ export interface BotBacktestResult {
   error?: string;
   report: PerformanceReport;
   equity: EquitySample[];
+  /** с чем сравнивать: у комбо — тот же портфель без ребалансировок (капитал, USDT), у остальных — цена актива */
   bench: EquitySample[];
+  benchLabel: string;
+  benchHint?: string;
   bot?: AnyBot;
   closed: ClosedPnlRecord[];
   durationMs: number;
 }
 
 const tick = () => new Promise<void>((r) => setTimeout(r, 0));
+
+/** Значения ряда src на моменты ряда base (последнее известное к моменту; до начала — первое). */
+export function alignTo(base: EquitySample[], src: EquitySample[]): EquitySample[] {
+  if (!src.length) return [];
+  let j = 0;
+  return base.map((p) => {
+    while (j + 1 < src.length && src[j + 1].t <= p.t) j++;
+    return { t: p.t, v: src[j].v };
+  });
+}
 
 /**
  * Быстрый бэктест бота на всём периоде сессии (или с указанного бара)
@@ -49,6 +62,7 @@ export async function runBotBacktest<T extends BotType>(
     report: computeReport([], []),
     equity: [],
     bench: [],
+    benchLabel: '',
     closed: [],
     durationMs: performance.now() - t0,
   });
@@ -71,12 +85,33 @@ export async function runBotBacktest<T extends BotType>(
     }
   }
   const b = ex.state.bots[bot.id];
-  if (b.status === 'running' || b.status === 'waiting') ex.stopBot(bot.id, 'Конец периода');
-  // финальная точка
-  const eq = ex.totalEquity();
-  ex.state.equity.push({ t: ex.state.now, main: eq.main, bots: eq.bots, bench: ex.price(syms[0]) });
+  // конец периода: закрытие по последней цене (с комиссией) и финальная точка капитала
+  ex.afterEnd(() => {
+    if (b.status === 'running' || b.status === 'waiting') ex.stopBot(bot.id, 'Конец периода');
+  });
   const equity = ex.state.equity.map((p) => ({ t: p.t, v: p.main + p.bots }));
-  const bench = ex.state.equity.map((p) => ({ t: p.t, v: p.bench }));
+  let bench = ex.state.equity.map((p) => ({ t: p.t, v: p.bench }));
+  let benchLabel = `${syms[0].replace(/USDT$/, '')} buy&hold`;
+  let benchHint: string | undefined;
+  // комбо: сравнение с тем же портфелем (монеты, веса, стороны, плечо, TP/SL, комиссии, funding), открытым
+  // на старте и без ребалансировок — разница с ним и есть эффект ребалансировки. Цена первой монеты тут ни о чём.
+  if (type === 'futuresCombo') {
+    const p = params as BotParamsMap['futuresCombo'];
+    if (p.rebalanceMode === 'none') bench = equity;
+    else {
+      const hold = await runBotBacktest(market, base, 'futuresCombo', { ...p, rebalanceMode: 'none' }, investment, {
+        fromCursor: opts.fromCursor,
+        signal: opts.signal,
+      });
+      if (!hold.ok) return fail(hold.error || 'Ошибка расчёта портфеля без ребалансировок');
+      // тот же отрезок времени, что и у бота: если бот остановился раньше (TP/SL/ликвидация) — сравниваем
+      // до момента остановки; если раньше остановился портфель без ребалансировок — дальше он в деньгах
+      bench = alignTo(equity, hold.equity);
+    }
+    benchLabel = 'Без ребалансировок';
+    benchHint =
+      'Доходность того же портфеля (монеты, веса, стороны, плечо, TP/SL, комиссии, funding), открытого на старте и не ребалансируемого. Разница с ботом — эффект ребалансировки.';
+  }
   const acc = ex.state.accounts[b.accountId];
   const closed = ex.state.closedPnl.filter((c) => c.accountId === b.accountId);
   opts.onProgress?.(1);
@@ -85,6 +120,8 @@ export async function runBotBacktest<T extends BotType>(
     report: computeReport(equity, closed, { fees: acc.stats.fees, funding: acc.stats.funding, bench }),
     equity,
     bench,
+    benchLabel,
+    benchHint,
     bot: b,
     closed,
     durationMs: performance.now() - t0,

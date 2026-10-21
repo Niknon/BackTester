@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { flat, mkExchange, wave } from './helpers';
 import { gridLevels } from '../src/engine/bots/grid';
+import { HOUR } from '../src/data/intervals';
+import { Exchange } from '../src/engine/exchange';
 import { runBotBacktest } from '../src/engine/headless';
 import { mkConfig, mkMarket } from './helpers';
 
@@ -238,5 +240,126 @@ describe('Комбо: акции США + крипта', () => {
     const acc = ex.botAccount(bot!);
     expect(acc.positions.AAPLUSDT.size).toBeGreaterThan(0);
     expect(acc.positions.BTCUSDT.size).toBeGreaterThan(0);
+  });
+});
+
+describe('Комбо: бенчмарк и время ребалансировки', () => {
+  const n = 120;
+  const mk = () => {
+    const a: [number, number, number, number][] = [];
+    const b: [number, number, number, number][] = [];
+    for (let i = 0; i < n; i++) {
+      const x = 100 * (1 + i * 0.005);
+      const y = 40 * (1 + 0.15 * Math.sin(i / 6));
+      a.push([x, x * 1.002, x * 0.998, x]);
+      b.push([y, y * 1.002, y * 0.998, y]);
+    }
+    return mkMarket({ BTCUSDT: a, ETHUSDT: b });
+  };
+  const legs = [
+    { symbol: 'BTCUSDT', side: 'long' as const, weight: 50 },
+    { symbol: 'ETHUSDT', side: 'long' as const, weight: 50 },
+  ];
+
+  it('без ребалансировок бенчмарк совпадает с капиталом бота', async () => {
+    const m = mk();
+    const r = await runBotBacktest(m, mkConfig({ end: m.end, symbols: ['BTCUSDT', 'ETHUSDT'] }), 'futuresCombo', { legs, leverage: 2, rebalanceMode: 'none', intervalHours: 24, thresholdPct: 5 }, 5000);
+    expect(r.ok).toBe(true);
+    expect(r.bench.map((p) => p.v)).toEqual(r.equity.map((p) => p.v));
+    expect(r.report.benchReturn).toBeCloseTo(r.report.totalReturn, 12);
+    expect(r.benchLabel).toBe('Без ребалансировок');
+  });
+
+  it('в конце периода позиции закрываются по последней цене: сделки в отчёте, итог = вложения + закрытый PnL', async () => {
+    const m = mk();
+    const r = await runBotBacktest(m, mkConfig({ end: m.end, symbols: ['BTCUSDT', 'ETHUSDT'] }), 'futuresCombo', { legs, leverage: 2, rebalanceMode: 'none', intervalHours: 24, thresholdPct: 5 }, 5000);
+    expect(r.bot!.stopReason).toBe('Конец периода');
+    expect(r.closed.length).toBe(2);
+    expect(r.report.trades).toBe(2);
+    expect(r.closed.every((c) => c.closeFee > 0)).toBe(true);
+    const pnl = r.closed.reduce((x, c) => x + c.closedPnl, 0);
+    expect(r.equity[r.equity.length - 1].v).toBeCloseTo(5000 + pnl, 6);
+    expect(r.equity[r.equity.length - 1].t).toBeGreaterThan(r.equity[r.equity.length - 2].t);
+  });
+
+  it('с ребалансировкой бенчмарк — тот же портфель без ребалансировок, а не цена первой монеты', async () => {
+    const m = mk();
+    const cfg = mkConfig({ end: m.end, symbols: ['BTCUSDT', 'ETHUSDT'] });
+    const p = { legs, leverage: 2, rebalanceMode: 'time' as const, intervalHours: 12, thresholdPct: 5 };
+    const r = await runBotBacktest(m, cfg, 'futuresCombo', p, 5000);
+    const hold = await runBotBacktest(m, cfg, 'futuresCombo', { ...p, rebalanceMode: 'none' }, 5000);
+    expect(r.bot!.stats.rebalances).toBeGreaterThan(3);
+    expect(r.bench.length).toBe(r.equity.length);
+    expect(r.bench.map((x) => x.t)).toEqual(r.equity.map((x) => x.t));
+    expect(r.report.benchReturn).toBeCloseTo(hold.report.totalReturn, 12);
+    // это не доходность цены первой монеты
+    const btc = m.series.get('BTCUSDT')!;
+    expect(Math.abs(r.report.benchReturn! - (btc.c[btc.length - 1] / btc.c[0] - 1))).toBeGreaterThan(0.02);
+  });
+
+  it('ребалансировка по времени — ровно через заданный период, без опоздания на свечу', () => {
+    const m = mk();
+    const ex = Exchange.create(mkConfig({ end: m.end, symbols: ['BTCUSDT', 'ETHUSDT'] }), m);
+    const { bot } = ex.createBot('futuresCombo', 'c', 5000, { legs, leverage: 1, rebalanceMode: 'time', intervalHours: 12, thresholdPct: 5 });
+    const t0 = ex.now;
+    for (let i = 0; i < 60; i++) ex.step();
+    const log = ex.state.bots[bot!.id].rt.log as { t: number; reason: string }[];
+    const times = log.filter((e) => e.reason === 'time').map((e) => (e.t - t0) / HOUR);
+    expect(times.slice(0, 4)).toEqual([12, 24, 36, 48]);
+  });
+});
+
+describe('Цена исполнения не округляется грубее истории', () => {
+  it('SOL по 9.971 при шаге цены 0.01 исполняется по 9.971, а не 9.98', () => {
+    const ex = mkExchange({ SOLUSDT: flat(9.971, 5) });
+    const o = ex.placeOrder({ category: 'linear', symbol: 'SOLUSDT', side: 'Buy', orderType: 'Market', qty: 100 });
+    expect(o.avgPrice).toBeCloseTo(9.971, 9);
+    const s = ex.placeOrder({ category: 'linear', symbol: 'SOLUSDT', side: 'Sell', orderType: 'Market', qty: 100 });
+    expect(s.avgPrice).toBeCloseTo(9.971, 9);
+    // круговая сделка стоит только комиссий
+    expect(ex.main.stats.realisedPnl).toBeCloseTo(-2 * 100 * 9.971 * ex.config.fees.linearTaker, 9);
+  });
+
+  it('проскальзывание считается от цены, а не от шага', () => {
+    const ex = mkExchange({ SOLUSDT: flat(9.971, 5) }, { slippageBps: 5 });
+    const o = ex.placeOrder({ category: 'linear', symbol: 'SOLUSDT', side: 'Buy', orderType: 'Market', qty: 100 });
+    expect(o.avgPrice / 9.971 - 1).toBeGreaterThanOrEqual(5e-4 - 1e-9);
+    expect(o.avgPrice / 9.971 - 1).toBeLessThan(5e-4 + 1e-5);
+  });
+});
+
+describe('Изолированная маржа: плечо и вывод маржи', () => {
+  it('нельзя поднять плечо или вывести маржу так, чтобы позиция сразу ушла за ликвидацию', () => {
+    const bars: [number, number, number, number][] = [[100, 100, 100, 100], [100, 100, 93, 93], [93, 93, 93, 93], [93, 93, 93, 93]];
+    const ex = mkExchange({ BTCUSDT: bars });
+    ex.setMarginMode('main', 'BTCUSDT', 'isolated');
+    ex.setLeverage('main', 'BTCUSDT', 10);
+    ex.placeOrder({ category: 'linear', symbol: 'BTCUSDT', side: 'Buy', orderType: 'Market', qty: 10 });
+    ex.step();
+    ex.step();
+    const pos = ex.main.positions.BTCUSDT;
+    expect(pos).toBeDefined(); // −7% при 10x: ещё жива
+    expect(ex.setLeverage('main', 'BTCUSDT', 50)).toMatch(/ликвидир/);
+    expect(pos.leverage).toBe(10);
+    expect(ex.addMargin('main', 'BTCUSDT', 500)).toBeNull();
+    // убыток 70 съедает добавленные 500 только частично: вывести можно не больше 430
+    expect(ex.addMargin('main', 'BTCUSDT', -480)).toMatch(/убытка/);
+    expect(ex.addMargin('main', 'BTCUSDT', -420)).toBeNull();
+  });
+});
+
+describe('Грид на старой истории с низкой ценой', () => {
+  it('SOL по $1–1.5 и 100 сеток: уровни не склеиваются из-за сегодняшнего шага цены 0.01', async () => {
+    const { priceTick, getAsset } = await import('../src/data/assets');
+    expect(getAsset('SOLUSDT').tickSize).toBeGreaterThanOrEqual(0.001);
+    const levels = gridLevels(1, 1.5, 100, 'geometric', priceTick('SOLUSDT', 1));
+    expect(new Set(levels).size).toBe(101);
+    for (let i = 1; i < levels.length; i++) expect(levels[i] / levels[i - 1] - 1).toBeGreaterThan(0.003);
+    // бот на колебаниях зарабатывает, а не платит комиссии за «арбитраж» между одинаковыми ценами
+    const m = mkMarket({ SOLUSDT: wave(1.25, 0.12, 400, 24) });
+    const r = await runBotBacktest(m, mkConfig({ end: m.end, symbols: ['SOLUSDT'] }), 'spotGrid', { symbol: 'SOLUSDT', lower: 1, upper: 1.5, grids: 100, mode: 'geometric', sellOnStop: false }, 5000);
+    expect(r.ok).toBe(true);
+    expect(r.bot!.stats.arbitrages).toBeGreaterThan(50);
+    expect(r.bot!.stats.gridProfit).toBeGreaterThan(0);
   });
 });

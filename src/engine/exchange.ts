@@ -1,4 +1,4 @@
-import { getAsset, maintenanceMarginRate, optionClockOf, qtyStepFor, roundToStep, strikeStyle } from '../data/assets';
+import { getAsset, maintenanceMarginRate, optionClockOf, priceTick, qtyStepFor, roundToStep, strikeStyle } from '../data/assets';
 import { HOUR } from '../data/intervals';
 import { dvolAt, pendingEvents, realizedVolAt } from '../data/volatility';
 import type { MarketData } from './market';
@@ -586,7 +586,9 @@ export class Exchange {
   private slip(side: Side, px: number, symbol: string) {
     const s = this.config.slippageBps / 10000;
     const raw = side === 'Buy' ? px * (1 + s) : px * (1 - s);
-    return roundToStep(raw, getAsset(symbol).tickSize, side === 'Buy' ? 'ceil' : 'floor');
+    // округление «в худшую сторону» до сегодняшнего грубого шага было скрытой комиссией на старой истории
+    // (SOL по $9.971 при шаге 0.01 исполнялся по 9.98) — шаг не грубее 6 значащих цифр цены
+    return roundToStep(raw, priceTick(symbol, raw), side === 'Buy' ? 'ceil' : 'floor');
   }
 
   placeOrder(req: PlaceOrderRequest): Order {
@@ -637,8 +639,8 @@ export class Exchange {
       o.qty = roundToStep(o.quoteQty / this.slip('Buy', last, o.symbol), qtyStep, 'floor');
     }
     o.qty = roundToStep(o.qty, qtyStep, 'floor');
-    if (o.orderType === 'Limit') o.price = roundToStep(o.price, spec.tickSize);
-    if (o.triggerPrice !== undefined) o.triggerPrice = roundToStep(o.triggerPrice, spec.tickSize);
+    if (o.orderType === 'Limit') o.price = roundToStep(o.price, priceTick(o.symbol, o.price));
+    if (o.triggerPrice !== undefined) o.triggerPrice = roundToStep(o.triggerPrice, priceTick(o.symbol, o.triggerPrice));
     if (!(o.qty > 0) || o.qty < minQty - EPS) return this.reject(o, `Мин. количество ${minQty}`);
     if (o.orderType === 'Limit' && !(o.price > 0)) return this.reject(o, 'Некорректная цена');
     if (o.category === 'spot' && (o.reduceOnly || o.closeOnTrigger)) {
@@ -761,7 +763,7 @@ export class Exchange {
       if (q <= o.filledQty) return 'Количество меньше исполненного';
       o.qty = q;
     }
-    if (patch.price !== undefined && o.orderType === 'Limit') o.price = spec ? roundToStep(patch.price, spec.tickSize) : patch.price;
+    if (patch.price !== undefined && o.orderType === 'Limit') o.price = spec ? roundToStep(patch.price, priceTick(o.symbol, patch.price)) : patch.price;
     if (patch.triggerPrice !== undefined && o.status === 'Untriggered') {
       if (o.tag === 'tpsl' && (o.stopOrderType === 'TakeProfit' || o.stopOrderType === 'StopLoss')) {
         const last = this.price(o.symbol);
@@ -770,7 +772,7 @@ export class Exchange {
         const ok = tp ? (long ? patch.triggerPrice > last : patch.triggerPrice < last) : long ? patch.triggerPrice < last : patch.triggerPrice > last;
         if (!ok) return `${tp ? 'TP' : 'SL'} должен быть ${(tp === long) ? 'выше' : 'ниже'} текущей цены`;
       }
-      o.triggerPrice = spec ? roundToStep(patch.triggerPrice, spec.tickSize) : patch.triggerPrice;
+      o.triggerPrice = spec ? roundToStep(patch.triggerPrice, priceTick(o.symbol, patch.triggerPrice)) : patch.triggerPrice;
       const last = this.price(this.dataSymbol(o.category, o.symbol));
       if (o.stopOrderType !== 'TakeProfit' && o.stopOrderType !== 'StopLoss')
         o.triggerDirection = o.triggerPrice >= last ? 1 : 2;
@@ -1387,12 +1389,14 @@ export class Exchange {
       const oldMargin = pos.isolatedMargin;
       pos.leverage = lev;
       if (pos.marginMode === 'isolated') pos.isolatedMargin = (Math.abs(pos.size) * pos.avgPrice) / lev;
-      if (this.available(acc) < -1e-6) {
+      // как на Bybit: плечо, при котором изолированная позиция сразу оказалась бы за ценой ликвидации, не ставится
+      const liqNow = pos.marginMode === 'isolated' && pos.isolatedMargin + this.unrealisedPnl(pos) <= this.positionMM(pos);
+      if (liqNow || this.available(acc) < -1e-6) {
         pos.leverage = oldLev;
         pos.isolatedMargin = oldMargin;
         if (prev === undefined) delete acc.leverage[symbol];
         else acc.leverage[symbol] = prev;
-        return 'Недостаточно доступной маржи для такого плеча';
+        return liqNow ? 'С таким плечом позиция сразу будет ликвидирована' : 'Недостаточно доступной маржи для такого плеча';
       }
     }
     return null;
@@ -1414,8 +1418,9 @@ export class Exchange {
     if (!pos || pos.marginMode !== 'isolated') return 'Только для изолированной позиции';
     if (amount > 0 && amount > this.available(acc)) return 'Недостаточно средств';
     if (amount < 0) {
+      // вывести можно только излишек над начальной маржей, и убыток позиции этот излишек уменьшает
       const minMargin = (Math.abs(pos.size) * pos.avgPrice) / pos.leverage;
-      if (pos.isolatedMargin + amount < minMargin - 1e-9) return 'Нельзя вывести маржу ниже начальной';
+      if (pos.isolatedMargin + amount + Math.min(0, this.unrealisedPnl(pos)) < minMargin - 1e-9) return 'Нельзя вывести маржу ниже начальной (с учётом убытка позиции)';
     }
     pos.isolatedMargin += amount;
     return null;
@@ -1453,7 +1458,7 @@ export class Exchange {
           reduceOnly: true,
           tag: 'tpsl',
         });
-        pos.takeProfit = roundToStep(p.takeProfit, getAsset(symbol).tickSize);
+        pos.takeProfit = roundToStep(p.takeProfit, priceTick(symbol, p.takeProfit));
       }
     }
     if (p.stopLoss !== undefined) {
@@ -1475,7 +1480,7 @@ export class Exchange {
           reduceOnly: true,
           tag: 'tpsl',
         });
-        pos.stopLoss = roundToStep(p.stopLoss, getAsset(symbol).tickSize);
+        pos.stopLoss = roundToStep(p.stopLoss, priceTick(symbol, p.stopLoss));
       }
     }
     if (p.trailingStop !== undefined) {
@@ -1760,7 +1765,7 @@ export class Exchange {
       if (c.crossEquity <= c.mm + 1e-9) this.liquidateCross(acc);
       else {
         // численная погрешность — сдвигаем цену на тик дальше
-        const tick = getAsset(symbol).tickSize;
+        const tick = priceTick(symbol, this.state.prices[symbol]);
         const pos = acc.positions[symbol];
         if (pos) {
           const saved = this.state.prices[symbol];
@@ -1861,6 +1866,10 @@ export class Exchange {
       for (const [sym, i] of bars) this.processBar(sym, i);
       // ценовые алерты (по максимуму/минимуму бара)
       if (st.alerts?.length) for (const [sym, i] of bars) this.checkAlerts(sym, this.market.series.get(sym)!.h[i], this.market.series.get(sym)!.l[i]);
+      // дальше — действия на закрытии свечи: цены уже закрытия, и время — тоже момент закрытия
+      // (иначе период ребалансировки/DCA отсчитывался от начала свечи и первое действие опаздывало на свечу,
+      // а опционы на закрытии оценивались с лишней свечой до экспирации)
+      st.now = tEnd;
       // опционы: лимитные ордера и контроль маржи на закрытии
       this.matchOptionOrders();
       this.checkCrossAtClose();
@@ -1900,6 +1909,24 @@ export class Exchange {
     }
   }
 
+  /**
+   * Действия после конца истории — закрытие позиций по последней цене в бэктестах. После конца сессии ордера
+   * отклоняются («Сессия завершена»), и финальное закрытие молча не исполнялось: позиции оставались открытыми
+   * без комиссии закрытия, а последние сделки не попадали в статистику. Точка капитала на этот момент обновляется.
+   */
+  afterEnd(fn: () => void) {
+    const st = this.state;
+    const fin = st.finished;
+    st.finished = false;
+    try {
+      fn();
+    } finally {
+      st.finished = fin;
+    }
+    if (st.equity.at(-1)?.t === st.now) st.equity.pop();
+    this.sampleEquity(true);
+  }
+
   /** Перемотка вперёд до индекса бара (с полной обработкой событий). */
   runTo(cursor: number, budgetMs = Infinity, stopOnAlert = false): boolean {
     const t0 = performance.now();
@@ -1923,7 +1950,7 @@ export class Exchange {
     const a: PriceAlert = {
       id: this.nextId('al'),
       symbol,
-      price: roundToStep(price, getAsset(symbol).tickSize),
+      price: roundToStep(price, priceTick(symbol, price)),
       dir: price >= last ? 'up' : 'down',
       note,
       createdTime: this.eventTime(),
@@ -1936,7 +1963,7 @@ export class Exchange {
     const a = this.state.alerts?.find((x) => x.id === id);
     if (!a) return;
     const last = this.price(a.symbol);
-    a.price = roundToStep(price, getAsset(a.symbol).tickSize);
+    a.price = roundToStep(price, priceTick(a.symbol, price));
     a.dir = a.price >= last ? 'up' : 'down';
   }
 

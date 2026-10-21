@@ -1,4 +1,4 @@
-import { getAsset, roundToStep, spotQtyStep } from '../../data/assets';
+import { getAsset, priceTick, roundToStep, spotQtyStep } from '../../data/assets';
 import type { Exchange } from '../exchange';
 import type { Execution, Order } from '../types';
 import type { BotLogic, BotState, FuturesGridParams, GridMode, SpotGridParams } from './types';
@@ -32,7 +32,7 @@ function perLevelQty(levels: number[], investment: number, leverage: number) {
 /** Максимальное число сеток, при котором объём уровня не меньше минимального лота. */
 export function maxFeasibleGrids(symbol: string, lower: number, upper: number, mode: GridMode, investment: number, leverage: number, minQty: number) {
   if (!(lower > 0) || !(upper > lower) || !(minQty > 0) || !(investment > 0)) return 0;
-  const tick = getAsset(symbol).tickSize;
+  const tick = priceTick(symbol, lower);
   let n = Math.min(300, Math.floor((investment * leverage * 0.9) / (((lower + upper) / 2) * minQty)) + 1);
   while (n >= 2 && perLevelQty(gridLevels(lower, upper, n, mode, tick), investment, leverage).q < minQty) n--;
   return Math.max(0, n);
@@ -51,7 +51,7 @@ function validateGrid(
   if (!(p.grids >= 2 && p.grids <= 300)) return 'Число сеток: от 2 до 300';
   const stepPct = (p.upper / p.lower) ** (1 / p.grids) - 1;
   if (stepPct <= 2 * feeRate) return `Шаг сетки ${(stepPct * 100).toFixed(3)}% не покрывает комиссии (${(2 * feeRate * 100).toFixed(2)}%) — уменьшите число сеток`;
-  const { q, denom } = perLevelQty(gridLevels(p.lower, p.upper, p.grids, p.mode, getAsset(p.symbol).tickSize), investment, leverage);
+  const { q, denom } = perLevelQty(gridLevels(p.lower, p.upper, p.grids, p.mode, priceTick(p.symbol, p.lower)), investment, leverage);
   if (q < minQty) {
     const need = Math.ceil((minQty * denom) / (leverage * 0.9));
     const maxN = maxFeasibleGrids(p.symbol, p.lower, p.upper, p.mode, investment, leverage, minQty);
@@ -150,10 +150,9 @@ function checkTrigger(ex: Exchange, bot: BotState, triggerPrice: number | undefi
 
 function launchSpot(ex: Exchange, bot: BotState<'spotGrid'>) {
   const p = bot.params;
-  const spec = getAsset(p.symbol);
   const px = ex.price(p.symbol);
   const rt = bot.rt as GridRt;
-  const levels = gridLevels(p.lower, p.upper, p.grids, p.mode, spec.tickSize);
+  const levels = gridLevels(p.lower, p.upper, p.grids, p.mode, priceTick(p.symbol, p.lower));
   const empty = emptyIndex(levels, px);
   const buys: number[] = [];
   const sells: number[] = [];
@@ -231,7 +230,7 @@ function launchFutures(ex: Exchange, bot: BotState<'futuresGrid'>) {
   const spec = getAsset(p.symbol);
   const px = ex.price(p.symbol);
   const rt = bot.rt as GridRt;
-  const levels = gridLevels(p.lower, p.upper, p.grids, p.mode, spec.tickSize);
+  const levels = gridLevels(p.lower, p.upper, p.grids, p.mode, priceTick(p.symbol, p.lower));
   const empty = emptyIndex(levels, px);
   const buys: number[] = [];
   const sells: number[] = [];

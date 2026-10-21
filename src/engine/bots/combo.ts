@@ -126,7 +126,7 @@ function rebalance(ex: Exchange, bot: BotState<'futuresCombo'>, reason: Rebalanc
   if (!initial) bot.stats.rebalances++;
   const after = currentWeights(ex, bot);
   const entry: RebalanceLogEntry = {
-    t: ex.eventTime(),
+    t: ex.now, // ребалансировка — на закрытии свечи (eventTime внутри шага — время её открытия)
     reason,
     equity,
     maxDev: maxDeviation(bot, before.weights),

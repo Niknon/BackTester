@@ -167,7 +167,7 @@ export function BotsPage() {
                 </div>
                 {bt.ok ? (
                   <>
-                    <ReportGrid r={bt.report} cols={6} compact />
+                    <ReportGrid r={bt.report} cols={6} compact benchLabel={bt.benchLabel} benchHint={bt.benchHint} />
                     {bt.bot && (
                       <div className="grid grid-cols-4 gap-1.5 text-[11px]">
                         <div className="bg-panel2 rounded px-3 py-2">
@@ -190,7 +190,7 @@ export function BotsPage() {
                         </div>
                       </div>
                     )}
-                    <EquityChart equity={bt.equity} bench={bt.bench} height={320} />
+                    <EquityChart equity={bt.equity} bench={bt.bench} benchLabel={bt.bot?.type === 'futuresCombo' ? 'Тот же портфель без ребалансировок' : bt.benchLabel} height={320} />
                     {bt.bot?.type === 'futuresCombo' && (
                       <div>
                         <div className="font-semibold mb-2">Журнал ребалансировок</div>

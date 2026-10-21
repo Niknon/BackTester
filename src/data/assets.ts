@@ -469,6 +469,17 @@ export function maintenanceMarginRate(symbol: string): number {
   return 0.5 / getAsset(symbol).maxLeverage;
 }
 
+/**
+ * Шаг цены для расчётов: биржевой, но не грубее 6 значащих цифр цены. Шаг у монеты сегодняшний, а история
+ * могла идти при ценах в десятки раз ниже (SOL по $1–10 при шаге 0.01): округление до него сдвигало цены
+ * исполнения и «склеивало» уровни сетки.
+ */
+export function priceTick(symbol: string, price: number): number {
+  const t = getAsset(symbol).tickSize;
+  if (!(price > 0) || !Number.isFinite(price)) return t;
+  return Math.min(t, Number(`1e${Math.floor(Math.log10(price)) - 5}`));
+}
+
 export function decimalsOf(step: number): number {
   if (step >= 1) return 0;
   const s = step.toString();

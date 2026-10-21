@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { getAsset, roundToStep, spotQtyStep } from '../../data/assets';
+import { getAsset, priceTick, roundToStep, spotQtyStep } from '../../data/assets';
 import { gridLevels, maxFeasibleGrids } from '../../engine/bots/grid';
 import { suggestFuturesGrid, suggestSpotGrid } from '../../engine/bots/suggest';
 import { COMBO_UTILIZATION } from '../../engine/bots/combo';
@@ -137,8 +137,7 @@ function GridStats({
 }) {
   if (!(upper > lower) || !(grids >= 2)) return null;
   const minQty = spot ? spotQtyStep(symbol) : getAsset(symbol).minQty;
-  const tick = getAsset(symbol).tickSize;
-  const levels = gridLevels(lower, upper, grids, mode, tick);
+  const levels = gridLevels(lower, upper, grids, mode, priceTick(symbol, lower));
   const maxGrids = maxFeasibleGrids(symbol, lower, upper, mode, investment, leverage, minQty);
   const needInv = Math.ceil((minQty * (levels.reduce((a, b) => a + b, 0) - levels[0])) / (leverage * 0.9));
   let minP = Infinity;

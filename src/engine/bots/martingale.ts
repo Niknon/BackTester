@@ -110,7 +110,8 @@ export const martingaleLogic: BotLogic<'martingale'> = {
       bot.rt.addOrderId = undefined;
       const isTp = order.stopOrderType === 'TakeProfit';
       bot.stats.cycles++;
-      bot.stats.gridProfit += exec.closedPnl - exec.fee;
+      // прибыль циклов — фактический закрытый PnL (с комиссиями открытия/закрытия, проскальзыванием и funding)
+      bot.stats.gridProfit = acc.stats.realisedPnl;
       if (!isTp) {
         bot.rt.stopAfter = 'Сработал стоп-лосс';
         return;
@@ -131,8 +132,10 @@ export const martingaleLogic: BotLogic<'martingale'> = {
       return;
     }
     // позиция закрыта извне (например, ликвидация) — открываем заново/останавливаем
-    const pos = ex.botAccount(bot).positions[bot.params.symbol];
+    const acc = ex.botAccount(bot);
+    const pos = acc.positions[bot.params.symbol];
     if (!pos && bot.status === 'running') {
+      bot.stats.gridProfit = acc.stats.realisedPnl; // убыток ликвидации — тоже результат цикла
       if (bot.params.loop) openCycle(ex, bot);
       else ex.stopBot(bot.id, 'Позиция закрыта');
     }

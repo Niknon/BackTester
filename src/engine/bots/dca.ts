@@ -34,7 +34,7 @@ export const dcaLogic: BotLogic<'dca'> = {
         if (o.status === 'Filled') {
           bot.stats.sells++;
           bot.stats.cycles++;
-          bot.stats.gridProfit += held * px - avg * held;
+          bot.stats.gridProfit = acc.stats.realisedPnl; // фактический результат продаж (цена исполнения, обе комиссии)
           bot.rt.orders = 0;
           ex.botLog(bot, `TP: продано ${held} ${base} по ${px}`);
         }
