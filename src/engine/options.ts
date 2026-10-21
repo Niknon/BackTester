@@ -1,4 +1,5 @@
 import { DAY, businessMs } from '../data/intervals';
+import { VOL_MODEL } from '../data/volatility';
 import type { OptionInstrument, OptionModelConfig } from './types';
 
 /* ───────────────────────── Блэк–Шоулз ───────────────────────── */
@@ -300,8 +301,6 @@ export function withEvents(atm: number, T: number, eventVar: number): number {
   return Math.min(100, Math.sqrt(atm * atm + eventVar / T));
 }
 
-/** Полупериод возврата волатильности к долгосрочному уровню, лет: всплеск (или затишье) рассасывается примерно за месяц. */
-export const VOL_REVERSION_YEARS = 1 / 12;
 
 /**
  * ATM IV для срока T (лет) — с временной структурой. По реализованной волатильности: дисперсия до экспирации —
@@ -323,7 +322,7 @@ export function atmIv(cfg: OptionModelConfig, inp: VolInputs, T: number): number
   } else {
     const fast = inp.fast ?? inp.rv7 ?? inp.rv30 ?? cfg.fixedIv;
     const slow = inp.slow ?? inp.rv30 ?? fast;
-    const k = (Math.LN2 / VOL_REVERSION_YEARS) * Math.max(0, T);
+    const k = (Math.LN2 / VOL_MODEL.reversionYears) * Math.max(0, T);
     const w = k > 1e-9 ? (1 - Math.exp(-k)) / k : 1;
     base = Math.sqrt(Math.max(1e-6, slow * slow + (fast * fast - slow * slow) * w));
   }

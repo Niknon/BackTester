@@ -1284,8 +1284,22 @@ export async function runOptionStrategy(market: MarketData, sessionCfg: SessionC
     durationMs: performance.now() - t0,
     bars: total,
     halted,
-    dataWarnings: [...priceJumpWarnings(market, unders), ...reportCoverageWarnings(market, unders)],
+    dataWarnings: [...implausibleWarnings(report, market), ...priceJumpWarnings(market, unders), ...reportCoverageWarnings(market, unders)],
   };
+}
+
+/**
+ * Доходность, которой не бывает у реальных стратегий на длинной истории: почти наверняка артефакт
+ * (ошибка данных, модельные цены опционов вместо исторических котировок, нереальный размер позиций).
+ */
+export function implausibleWarnings(report: PerformanceReport, market: MarketData): string[] {
+  const years = (market.end - market.start) / (365 * DAY);
+  if (years < 0.5) return [];
+  const cagr = report.cagr;
+  if (!(years >= 1 && cagr > 1) && !(report.totalReturn > 100)) return [];
+  return [
+    `Доходность ${Number.isFinite(cagr) ? `${Math.round(cagr * 100).toLocaleString('ru-RU')}% годовых` : 'неправдоподобно высокая'} — выше, чем у любой известной стратегии на длинной истории. Почти наверняка это артефакт: ошибка данных, модельные цены опционов (не исторические котировки) или размер позиций, который рынок не исполнит. Не переносите на реальную торговлю без проверки на исторических котировках опционов.`,
+  ];
 }
 
 /**

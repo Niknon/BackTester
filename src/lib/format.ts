@@ -11,6 +11,8 @@ export function fmtNum(n: number | null | undefined, d = 2, opts: { sign?: boole
     ];
     for (const [v, s] of units) if (Math.abs(n) >= v) return (opts.sign && n > 0 ? '+' : '') + (n / v).toFixed(2) + s;
   }
+  // астрономические суммы (ошибка данных или модели) — экспонентой, иначе строка не помещается на экран
+  if (Math.abs(n) >= 1e15) return (opts.sign && n > 0 ? '+' : '') + n.toExponential(3).replace('e+', 'e');
   const s = n.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
   return opts.sign && n > 0 ? '+' + s : s;
 }

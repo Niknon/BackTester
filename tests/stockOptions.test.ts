@@ -131,3 +131,13 @@ describe('Даты отчётов в SEC', () => {
     expect(isResultsFiling('6-K', '', 'form6k-boltmadeacquisition.htm')).toBe(false);
   });
 });
+
+describe('Предупреждение о неправдоподобной доходности', () => {
+  it('больше 100% годовых на длинной истории или ×100 — предупреждение', async () => {
+    const { implausibleWarnings } = await import('../src/engine/optionRunner');
+    const m = new MarketData('1d', Date.UTC(2016, 0, 1), Date.UTC(2026, 0, 1));
+    expect(implausibleWarnings({ cagr: 0.7, totalReturn: 200 } as any, m).length).toBe(1);
+    expect(implausibleWarnings({ cagr: 1.4, totalReturn: 50 } as any, m).length).toBe(1);
+    expect(implausibleWarnings({ cagr: 0.4, totalReturn: 28 } as any, m)).toEqual([]);
+  });
+});

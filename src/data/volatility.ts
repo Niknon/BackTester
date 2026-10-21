@@ -6,8 +6,8 @@ import { lowerBound, type SeriesData } from './types';
  * Реализованная волатильность (годовая) по часовым лог-доходностям. Значение в момент t использует
  * только данные ДО t (без заглядывания в будущее).
  * rv7 / rv30 — скользящие окна 7 и 30 дней (для справки на экране и режима DVOL).
- * fast / slow — экспоненциально сглаженные оценки: текущий уровень (полупериод ~11 торговых дней, как RiskMetrics
- * λ = 0.94) и долгосрочный (полупериод ~полгода). По ним строится IV: окно в 5 дневных доходностей слишком
+ * fast / slow — экспоненциально сглаженные оценки: текущий уровень (полупериод ~месяц торговых дней)
+ * и долгосрочный (полупериод ~год). По ним строится IV: окно в 5 дневных доходностей слишком
  * шумное — в тихую неделю IV NVDA падала до 8%, и покупка опционов «дешёвой» IV давала систематическую прибыль.
  */
 export interface RealizedVol {
@@ -19,9 +19,12 @@ export interface RealizedVol {
   length: number;
 }
 
-/** Полупериоды сглаживания волатильности, в рабочих (или календарных у крипты) днях. */
-export const VOL_FAST_HALF_LIFE_DAYS = 11;
-export const VOL_SLOW_HALF_LIFE_DAYS = 126;
+/**
+ * Параметры модели волатильности: полупериоды сглаживания (в рабочих днях у акций, в календарных у крипты)
+ * и полупериод возврата IV к долгосрочному уровню (лет). Подобраны так, чтобы доход опционов не зависел
+ * от уровня IV при входе (проверка на 10 годах акций и 5 годах BTC/ETH/NVDA, см. README).
+ */
+export const VOL_MODEL = { fastHalfLifeDays: 22, slowHalfLifeDays: 252, reversionYears: 1 / 12 };
 
 const ANNUAL_HOURS = 24 * 365;
 /** Рабочих часов в году (пн–пт круглосуточно): годовая волатильность по будням сопоставима с календарной. */
@@ -126,8 +129,8 @@ export function computeRealizedVol(
   };
   const fast = new Float64Array(n);
   const slow = new Float64Array(n);
-  ewma(VOL_FAST_HALF_LIFE_DAYS, fast);
-  ewma(VOL_SLOW_HALF_LIFE_DAYS, slow);
+  ewma(VOL_MODEL.fastHalfLifeDays, fast);
+  ewma(VOL_MODEL.slowHalfLifeDays, slow);
   const roll = (windowHours: number, out: Float64Array) => {
     let sum = 0;
     let hrs = 0;
