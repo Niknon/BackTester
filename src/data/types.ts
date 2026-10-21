@@ -40,7 +40,8 @@ export type IntervalKey =
   | '1d'
   | '1w';
 
-export type ProviderId = 'bybit' | 'okx' | 'binance' | 'yahoo' | 'dukascopy' | 'synthetic';
+/** binanceSpot и coinbase — только история крипты до запуска перпетуалов (основным источником не выбираются) */
+export type ProviderId = 'bybit' | 'okx' | 'binance' | 'yahoo' | 'dukascopy' | 'synthetic' | 'binanceSpot' | 'coinbase';
 
 export interface LoadProgress {
   symbol: string;

@@ -7,6 +7,7 @@ import { bybitProvider } from './providers/bybit';
 import { okxProvider } from './providers/okx';
 import { binanceProvider } from './providers/binance';
 import { syntheticProvider } from './providers/synthetic';
+import { binanceSpotProvider, coinbaseProvider, spotCoin } from './providers/spotHistory';
 import { allSplits, fetchSplits, yahooDaily, yahooIntradayFrom, yahooProvider, type Split } from './providers/yahoo';
 import { DUKA_MINUTE_DAYS, DUKA_TIME_BUDGET, dukaInstrument, dukascopyDown, dukascopyProvider } from './providers/dukascopy';
 import { getAsset } from './assets';
@@ -19,10 +20,12 @@ export const PROVIDERS: Record<ProviderId, DataProvider> = {
   yahoo: yahooProvider,
   dukascopy: dukascopyProvider,
   synthetic: syntheticProvider,
+  binanceSpot: binanceSpotProvider,
+  coinbase: coinbaseProvider,
 };
 
 export const PROVIDER_LIST: { id: ProviderId; label: string; note: string }[] = [
-  { id: 'bybit', label: 'Bybit', note: 'Основной источник: свечи и funding USDT-перпетуалов Bybit' },
+  { id: 'bybit', label: 'Bybit', note: 'Основной источник: свечи и funding USDT-перпетуалов Bybit. История крипты до запуска перпетуала (BTC/ETH — до 2020 г.) — спот Binance и Coinbase' },
   { id: 'okx', label: 'OKX', note: 'Фолбэк: те же активы (кроме MNT/TON), funding — только ~3 мес.' },
   { id: 'binance', label: 'Binance Futures', note: 'Фолбэк: крипто-перпетуалы Binance (без TradFi и xStocks)' },
   {
@@ -42,7 +45,12 @@ const CHUNK_BARS = 5000;
 /** Версия кэша свечей источника: меняется, когда исправлена обработка его данных (старый кэш перекачивается). */
 const CACHE_VER: Partial<Record<ProviderId, string>> = { yahoo: '#3' };
 /** Самая ранняя дата запроса: криптобиржи — с 2018, Yahoo (акции США) — с 1980, Dukascopy — с 2003. */
-const EARLIEST: Partial<Record<ProviderId, number>> = { yahoo: Date.UTC(1980, 0, 1), dukascopy: Date.UTC(2003, 0, 1) };
+const EARLIEST: Partial<Record<ProviderId, number>> = {
+  yahoo: Date.UTC(1980, 0, 1),
+  dukascopy: Date.UTC(2003, 0, 1),
+  binanceSpot: Date.UTC(2017, 6, 1),
+  coinbase: Date.UTC(2015, 0, 1),
+};
 const DEFAULT_EARLIEST = Date.UTC(2018, 0, 1);
 
 type CachedChunk = { t: Float64Array; o: Float64Array; h: Float64Array; l: Float64Array; c: Float64Array; v: Float64Array; complete: boolean };
@@ -174,11 +182,74 @@ export async function loadSeries(o: LoadOptions): Promise<LoadResult> {
     const merged = await withIntradayHistory(o, best, errors);
     if (merged) return { series: await repairSplitBlocks(merged, o, errors, best.provider === 'yahoo' ? best.series : undefined), provider: 'dukascopy', errors };
   }
+  // крипта: история до запуска перпетуала — со спота (Binance, раньше — Coinbase)
+  if (best && !stockLike && o.provider !== 'synthetic' && o.fallback !== false && spotCoin(o.symbol)) {
+    const ext = await withSpotHistory(o, best.series, PROVIDERS[best.provider].label, errors);
+    if (ext) best.series = ext;
+  }
   if (best) return { series: stockLike && best.provider !== 'synthetic' ? await repairSplitBlocks(best.series, o, errors) : best.series, provider: best.provider, errors };
   throw new Error(`Не удалось загрузить ${o.symbol}:\n${errors.join('\n')}`);
 }
 
 const fmtDay = (t: number) => new Date(t).toISOString().slice(0, 10);
+
+/** Источники старой истории крипты: от более позднего и подробного к более раннему. */
+const SPOT_HISTORY: ProviderId[] = ['binanceSpot', 'coinbase'];
+
+/**
+ * Склейка истории крипто-перпетуала с более ранним спотом. Перпетуалы BTC/ETH появились в 2019–2020 гг.,
+ * альткоинов — позже; без этого сессия «за 10 лет» до 2020 года была пустой, и боты, запущенные на старте,
+ * не могли открыть позиции. Уровень старого куска подгоняется к более позднему по общим свечам
+ * (базис перпетуала и USD/USDT — доли процента), funding до запуска перпетуала — по ставке по умолчанию.
+ */
+export async function withSpotHistory(o: LoadOptions, perp: SeriesData, perpLabel: string, errors: string[]): Promise<SeriesData | null> {
+  const first = perp.length ? perp.t[0] : o.end;
+  if (first <= o.start + 5 * DAY) return null;
+  let cur: Candle[] = Array.from(perp.t, (t, i) => ({ t, o: perp.o[i], h: perp.h[i], l: perp.l[i], c: perp.c[i], v: perp.v[i] }));
+  const used: string[] = [];
+  for (const id of SPOT_HISTORY) {
+    const head = cur.length ? cur[0].t : o.end;
+    if (head <= o.start + 5 * DAY) break;
+    const p = PROVIDERS[id];
+    try {
+      // с запасом в 10 дней внахлёст — для подгонки уровня
+      const s = await loadFrom(p, { ...o, start: o.start, end: Math.min(o.end, head + 10 * DAY) });
+      if (!s.length || s.t[0] >= head) continue;
+      const curIdx = new Map(cur.slice(0, 2000).map((k) => [k.t, k.c]));
+      const ratios: number[] = [];
+      for (let i = 0; i < s.length; i++) {
+        const c = curIdx.get(s.t[i]);
+        if (c && s.c[i] > 0) ratios.push(c / s.c[i]);
+      }
+      ratios.sort((a, b) => a - b);
+      const k = ratios.length ? ratios[Math.floor(ratios.length / 2)] : 1;
+      if (!(k > 0.8 && k < 1.25)) {
+        errors.push(`${p.label}: цены ${o.symbol} расходятся с ${perpLabel} (×${k.toFixed(3)}) — старая история не добавлена`);
+        continue;
+      }
+      const add: Candle[] = [];
+      for (let i = 0; i < s.length && s.t[i] < head; i++) {
+        if (s.t[i] < o.start) continue;
+        add.push({ t: s.t[i], o: s.o[i] * k, h: s.h[i] * k, l: s.l[i] * k, c: s.c[i] * k, v: s.v[i] });
+      }
+      if (!add.length) continue;
+      used.push(`${p.label} с ${fmtDay(add[0].t)}`);
+      cur = [...add, ...cur];
+    } catch (e: any) {
+      if (e?.name === 'AbortError') throw e;
+      errors.push(`${p.label}: старая история ${o.symbol} не загружена (${String(e?.message || e).slice(0, 120)})`);
+    }
+  }
+  if (!used.length) {
+    if (perp.length) errors.push(`${o.symbol}: история есть только с ${fmtDay(first)} (запуск перпетуала на ${perpLabel})`);
+    return null;
+  }
+  errors.push(
+    `${o.symbol}: перпетуал на ${perpLabel} — с ${fmtDay(first)}, более ранняя история — спот (${used.join(', ')}); funding до запуска перпетуала — по ставке по умолчанию`,
+  );
+  if (cur[0].t > o.start + 5 * DAY) errors.push(`${o.symbol}: история есть только с ${fmtDay(cur[0].t)}`);
+  return seriesFromCandles(o.symbol, o.interval, cur);
+}
 
 /**
  * Куски истории акции без поправки на сплит. Цена там отличается от остальной истории ровно в «сплитовое»

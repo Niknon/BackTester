@@ -51,7 +51,9 @@ export function BotsPage() {
     if (mode === 'live') {
       const res = ex.createBot(r.type, r.name, r.investment, r.params as any);
       if (res.error) return toast('error', 'Бот не создан', res.error);
-      toast('success', `Бот «${r.name}» запущен`, `Инвестиции ${fmtUsd(r.investment)} USDT переведены в суб-аккаунт бота`);
+      if (res.bot?.rt.awaitData)
+        toast('info', `Бот «${r.name}» ждёт начала истории`, `${res.bot.symbols.filter((s) => !Number.isFinite(ex.price(s))).join(', ')}: цен ещё нет — бот запустится с первой свечой`);
+      else toast('success', `Бот «${r.name}» запущен`, `Инвестиции ${fmtUsd(r.investment)} USDT переведены в суб-аккаунт бота`);
       bump(true);
       set({ focusBot: res.bot?.id ?? null });
       setView('running');
@@ -66,7 +68,7 @@ export function BotsPage() {
         onProgress: setProgress,
       });
       if (!res.ok) toast('error', 'Бэктест не выполнен', res.error);
-      setBt({ ...res, name: r.name, from: btFrom === 'now' ? fmtTime(ex.now) : fmtTime(ex.market.start) });
+      setBt({ ...res, name: r.name, from: fmtTime(res.equity[0]?.t ?? (btFrom === 'now' ? ex.now : ex.market.start)) });
     } finally {
       setBusy(false);
     }
@@ -165,6 +167,7 @@ export function BotsPage() {
                     ✕
                   </button>
                 </div>
+                {bt.notes.length > 0 && <div className="text-[11px] text-brand">⚠ {bt.notes.join('. ')}</div>}
                 {bt.ok ? (
                   <>
                     <ReportGrid r={bt.report} cols={6} compact benchLabel={bt.benchLabel} benchHint={bt.benchHint} />

@@ -86,6 +86,11 @@ export interface AccountSummary {
   isolatedMargin: number;
 }
 
+/** Инструменты бота по его параметрам (до запуска логики). */
+export function botSymbolsOf(type: BotType, params: any): string[] {
+  return type === 'futuresCombo' ? (params as BotParamsMap['futuresCombo']).legs.map((l) => l.symbol) : [params.symbol as string];
+}
+
 function newStats(): AccountStats {
   return {
     realisedPnl: 0,
@@ -1875,7 +1880,15 @@ export class Exchange {
       this.checkCrossAtClose();
       // боты
       for (const bot of Object.values(st.bots)) {
-        if (bot.status === 'running' || bot.status === 'waiting') BOT_LOGIC[bot.type].onBar(this, bot as any);
+        if (bot.status !== 'running' && bot.status !== 'waiting') continue;
+        if (bot.rt.awaitData) {
+          if (bot.symbols.every((s) => Number.isFinite(this.price(s)))) {
+            bot.rt = {};
+            BOT_LOGIC[bot.type].start(this, bot as any);
+          }
+          continue;
+        }
+        BOT_LOGIC[bot.type].onBar(this, bot as any);
       }
     } finally {
       this.inStep = false;
@@ -2057,6 +2070,16 @@ export class Exchange {
       hist: [{ t: this.state.now, v: investment }],
     };
     this.state.bots[id] = bot;
+    // истории по монете ещё нет (сессия начинается раньше её листинга): бот ждёт первой цены,
+    // а не стоит пустым до конца (комбо без ребалансировок) и не останавливается с ошибкой (гриды)
+    const syms = botSymbolsOf(type, params);
+    const missing = syms.filter((s) => !Number.isFinite(this.price(s)));
+    if (missing.length) {
+      bot.symbols = syms;
+      bot.rt = { awaitData: true };
+      this.emit({ type: 'bot', botId: id, message: `Бот «${name}» создан и ждёт начала истории ${missing.join(', ')}`, level: 'info' });
+      return { bot };
+    }
     logic.start(this, bot as any);
     this.emit({ type: 'bot', botId: id, message: `Бот «${name}» создан`, level: 'info' });
     return { bot };

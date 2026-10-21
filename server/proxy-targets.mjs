@@ -5,6 +5,9 @@ export const PROXY_TARGETS = {
   '/proxy/okx': 'https://www.okx.com',
   '/proxy/binance-fapi': 'https://fapi.binance.com',
   '/proxy/binance-spot': 'https://api.binance.com',
+  // история крипты до запуска перпетуалов: спот Binance (публичное зеркало без гео-блока) и Coinbase
+  '/proxy/binance-data': 'https://data-api.binance.vision',
+  '/proxy/coinbase': 'https://api.exchange.coinbase.com',
   '/proxy/moex': 'https://iss.moex.com',
   // дивиденды акций Мосбиржи (ISS больше не отдаёт их бесплатно): таблицы на dohod.ru и smart-lab.ru
   '/proxy/dohod': 'https://www.dohod.ru',

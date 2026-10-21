@@ -1,4 +1,4 @@
-import { Exchange } from './exchange';
+import { Exchange, botSymbolsOf } from './exchange';
 import type { MarketData } from './market';
 import { computeReport, type EquitySample, type PerformanceReport } from './metrics';
 import type { AnyBot, BotParamsMap, BotType } from './bots/types';
@@ -13,6 +13,8 @@ export interface BotBacktestResult {
   bench: EquitySample[];
   benchLabel: string;
   benchHint?: string;
+  /** пояснения к расчёту (например, бэктест начат позже из-за начала истории монеты) */
+  notes: string[];
   bot?: AnyBot;
   closed: ClosedPnlRecord[];
   durationMs: number;
@@ -43,19 +45,14 @@ export async function runBotBacktest<T extends BotType>(
   opts: { fromCursor?: number; onProgress?: (f: number) => void; signal?: { aborted: boolean } } = {},
 ): Promise<BotBacktestResult> {
   const t0 = performance.now();
-  const config: SessionConfig = { ...base, initialBalance: investment };
+  const syms = botSymbolsOf(type, params);
+  // монеты бота — сразу в конфиге: по первой из них считается buy&hold (раньше стартовая точка бенчмарка
+  // бралась по первому символу сессии: грид на SOL в сессии с BTC показывал «Buy & Hold −99.7%»)
+  const config: SessionConfig = { ...base, initialBalance: investment, symbols: syms };
   const ex = Exchange.create(config, market);
   ex.quiet = true;
-  const syms =
-    type === 'futuresCombo' ? (params as BotParamsMap['futuresCombo']).legs.map((l) => l.symbol) : [(params as any).symbol as string];
   ex.activeSymbols = syms;
-  ex.state.config = { ...config, symbols: syms };
-  if (opts.fromCursor) {
-    ex.state.cursor = opts.fromCursor;
-    ex.state.now = market.timeAt(opts.fromCursor);
-    ex.state.equity = [];
-    ex.syncPrices();
-  }
+  const notes: string[] = [];
   const fail = (error: string): BotBacktestResult => ({
     ok: false,
     error,
@@ -63,9 +60,31 @@ export async function runBotBacktest<T extends BotType>(
     equity: [],
     bench: [],
     benchLabel: '',
+    notes,
     closed: [],
     durationMs: performance.now() - t0,
   });
+  // история какой-то монеты начинается позже: считаем с момента, когда есть цены всех монет бота,
+  // иначе годы «пустого» капитала до её листинга искажают CAGR, Шарп и сравнение
+  let fromCursor = opts.fromCursor ?? 0;
+  const late = syms
+    .map((s) => ({ s, t: market.series.get(s)?.length ? market.series.get(s)!.t[0] : Infinity }))
+    .filter((x) => x.t + market.dt > market.timeAt(fromCursor))
+    .sort((a, b) => b.t - a.t);
+  if (late.length) {
+    const need = Math.ceil((late[0].t + market.dt - market.start) / market.dt);
+    if (need >= market.totalBars) return fail(`Нет истории ${late[0].s} за период сессии`);
+    fromCursor = need;
+    notes.push(`История ${late.map((x) => `${x.s.replace(/USDT$/, '')} — с ${new Date(x.t).toISOString().slice(0, 10)}`).join(', ')}: бэктест начат с ${new Date(market.timeAt(need)).toISOString().slice(0, 10)}`);
+  }
+  if (fromCursor) {
+    ex.state.cursor = fromCursor;
+    ex.state.now = market.timeAt(fromCursor);
+    ex.syncPrices();
+    // стартовая точка — вложенная сумма до сделок входа (их комиссия входит в результат)
+    ex.state.equity = [{ t: ex.state.now, main: investment, bots: 0, bench: ex.price(syms[0]) }];
+    ex.state.lastSample = ex.state.now;
+  }
   const { bot, error } = ex.createBot(type, 'Бэктест', investment, params);
   if (!bot) return fail(error || 'Ошибка создания бота');
   const total = market.totalBars;
@@ -100,7 +119,7 @@ export async function runBotBacktest<T extends BotType>(
     if (p.rebalanceMode === 'none') bench = equity;
     else {
       const hold = await runBotBacktest(market, base, 'futuresCombo', { ...p, rebalanceMode: 'none' }, investment, {
-        fromCursor: opts.fromCursor,
+        fromCursor,
         signal: opts.signal,
       });
       if (!hold.ok) return fail(hold.error || 'Ошибка расчёта портфеля без ребалансировок');
@@ -122,6 +141,7 @@ export async function runBotBacktest<T extends BotType>(
     bench,
     benchLabel,
     benchHint,
+    notes,
     bot: b,
     closed,
     durationMs: performance.now() - t0,

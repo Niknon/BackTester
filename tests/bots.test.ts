@@ -363,3 +363,13 @@ describe('Грид на старой истории с низкой ценой',
     expect(r.bot!.stats.gridProfit).toBeGreaterThan(0);
   });
 });
+
+describe('Бенчмарк бэктеста бота — по его монете', () => {
+  it('грид на SOL в сессии, где первым идёт BTC: buy&hold — доходность SOL, а не «−99.7%»', async () => {
+    const m = mkMarket({ BTCUSDT: wave(60000, 500, 100), SOLUSDT: wave(150, 5, 100) });
+    const r = await runBotBacktest(m, mkConfig({ end: m.end, symbols: ['BTCUSDT', 'SOLUSDT'] }), 'spotGrid', { symbol: 'SOLUSDT', lower: 140, upper: 160, grids: 10, mode: 'arithmetic', sellOnStop: true }, 1000);
+    const sol = m.series.get('SOLUSDT')!;
+    expect(r.bench[0].v).toBe(150);
+    expect(r.report.benchReturn).toBeCloseTo(sol.c[sol.length - 1] / 150 - 1, 9);
+  });
+});
