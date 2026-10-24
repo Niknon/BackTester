@@ -19,6 +19,7 @@ function volatileWarmup(): [number, number, number, number][] {
 }
 import { HOUR } from '../src/data/intervals';
 import { MAIN } from '../src/engine/exchange';
+import { DEFAULT_OPTION_MODEL as OPT_MODEL } from '../src/engine/types';
 
 describe('Блэк–Шоулз', () => {
   it('паритет колл-пут (r=0): C − P = S − K', () => {
@@ -178,11 +179,11 @@ describe('Опционные стратегии', () => {
 
   it('если нога отклонена — исполненные ноги откатываются', async () => {
     const { STRATEGIES, resolveStrategy, openStrategy } = await import('../src/engine/optionStrategies');
-    const ex = mkExchange({ BTCUSDT: flat(100000, 48) }, { initialBalance: 200 }, flat(100000, 24 * 40));
+    // стандартная маржа: при депозите 200 USDT маржи под проданные коллы не хватит — продажа будет отклонена
+    const ex = mkExchange({ BTCUSDT: flat(100000, 48) }, { initialBalance: 200, options: { ...OPT_MODEL, marginMode: 'regular' } }, flat(100000, 24 * 40));
     const exp = ex.optionExpiries('BTC')[3];
     const strikes = ex.optionChain('BTC', exp).rows.map((r) => r.strike);
     const atm = strikes.reduce((b, k, i) => (Math.abs(k - 100000) < Math.abs(strikes[b] - 100000) ? i : b), 0);
-    // при депозите 200 USDT маржи под проданные коллы не хватит — продажа будет отклонена
     const def = STRATEGIES.find((d) => d.key === 'call_ratio')!;
     const r = resolveStrategy(ex, def, 'BTC', strikes, atm, 1, exp, exp, 0.01);
     const res = openStrategy(ex, r.legs);
@@ -197,8 +198,8 @@ describe('Маржа и ликвидация проданных опционов
     return [p, p * 1.004, p * 0.996, p];
   });
 
-  it('премия не засчитывается в маржу: глубоко ITM-шорт сверх депозита отклоняется', () => {
-    const ex = mkExchange({ BTCUSDT: flat(90000, 5) }, { initialBalance: 10000 }, warm.map((b) => b.map((x) => (x * 9) / 7) as [number, number, number, number]));
+  it('премия не засчитывается в маржу: глубоко ITM-шорт сверх депозита отклоняется (стандартная маржа)', () => {
+    const ex = mkExchange({ BTCUSDT: flat(90000, 5) }, { initialBalance: 10000, options: { ...OPT_MODEL, marginMode: 'regular' } }, warm.map((b) => b.map((x) => (x * 9) / 7) as [number, number, number, number]));
     const exp = ex.optionExpiries('BTC')[3];
     const sym = optionSymbol('BTC', exp, 70000, 'C');
     const o = ex.placeOrder({ category: 'option', symbol: sym, side: 'Sell', orderType: 'Market', qty: 0.5 });

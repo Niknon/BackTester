@@ -1,5 +1,5 @@
 import type { Exchange } from '../../engine/exchange';
-import { optionFee, parseOptionSymbol, shortOptionMargin } from '../../engine/options';
+import { optionFee, parseOptionSymbol } from '../../engine/options';
 import { legValueAt, type ResolvedLeg } from '../../engine/optionStrategies';
 import { breakevens, payoffAtExpiry, type PayoffLeg } from './PayoffChart';
 
@@ -20,11 +20,16 @@ export function strategyEconomics(ex: Exchange, legs: ResolvedLeg[], nearExpiry:
   });
   const premium = legs.filter((l) => l.category === 'option').reduce((s, l) => s + (l.side === 'Sell' ? 1 : -1) * l.price * l.qty, 0);
   const feeSum = fees.reduce((a, b) => a + b, 0);
-  const margin = legs.reduce((s, l) => {
-    if (l.type === 'F') return s + (l.price * l.qty) / ex.leverageOf(ex.main, l.symbol);
-    if (l.side !== 'Sell') return s;
-    return s + shortOptionMargin(ex.config.options, parseOptionSymbol(l.symbol)!, S, l.mark).im * l.qty;
-  }, 0);
+  // маржа: перпетуал — по плечу; опционы — прирост IM книги по активу (в портфельном режиме купленные
+  // крылья её уменьшают, в стандартном — сумма по проданным ногам)
+  let margin = legs.reduce((s, l) => (l.type === 'F' ? s + (l.price * l.qty) / ex.leverageOf(ex.main, l.symbol) : s), 0);
+  const opts = legs.filter((l) => l.category === 'option');
+  const u = opts.length ? parseOptionSymbol(opts[0].symbol)?.underlying : undefined;
+  if (u) {
+    const before = ex.optionGroupMargin(ex.main, u).im;
+    const after = ex.optionGroupMargin(ex.main, u, opts.map((l) => ({ symbol: l.symbol, size: (l.side === 'Buy' ? 1 : -1) * l.qty }))).im;
+    margin += Math.max(0, after - before);
+  }
   const delta = legs.reduce((s, l) => s + l.delta, 0);
   return { payoff, premium, feeSum, margin, delta };
 }

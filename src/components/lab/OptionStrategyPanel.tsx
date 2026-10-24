@@ -487,7 +487,8 @@ export function OptionStrategyPanel() {
             onToggle={toggleSection}
             note={
               (s.sizeMode === 'risk' ? `риск ${s.riskPct}%` : s.sizeMode === 'notional' ? `номинал ${s.notionalPct}%` : s.sizeMode === 'margin' ? `маржа ${s.marginPct}%` : `${s.qty} ${spec.base}`) +
-              (s.useCap ? ` · ≤ ${fmtNum(s.capUsd, 0)}` : '')
+              (s.useCap ? ` · ≤ ${fmtNum(s.capUsd, 0)}` : '') +
+              (s.marginMode === 'regular' ? ' · стандартная маржа' : '')
             }
           >
             <Segmented
@@ -517,6 +518,19 @@ export function OptionStrategyPanel() {
               <Help text="Сколько максимум средств (премия покупок + маржа продаж) может занять одна конструкция. Ликвидность реального рынка конечна: крупный объём не купить по цене модели. Без потолка размер растёт вместе со счётом и сложный процент уходит в нереальные суммы." />
             </Check>
             {s.useCap && <NumInput label="Не больше" value={s.capUsd} onChange={(x) => set('capUsd', x === '' ? 0 : x)} suffix="USDT" />}
+            <div className="text-[11px] text-muted flex items-center gap-1">
+              Маржа опционов
+              <Help text="Портфельная (как Portfolio Margin на Bybit): маржа — худший убыток всей книги опционов по активу при движении цены ±15% и сдвигах IV, поэтому купленные крылья кондоров и спредов уменьшают её до реального риска. Стандартная (Regular Margin): каждая проданная нога маржируется отдельно (mark + 7.5% цены актива), крылья не учитываются — при движении цены маржа растёт быстрее риска, и счёт ликвидируется, даже если убыток конструкции ограничен и покрыт." />
+            </div>
+            <Segmented
+              size="sm"
+              value={s.marginMode ?? 'portfolio'}
+              onChange={(x) => set('marginMode', x)}
+              options={[
+                { value: 'portfolio', label: 'Портфельная (PM)' },
+                { value: 'regular', label: 'Стандартная' },
+              ]}
+            />
           </Section>
 
           <Section

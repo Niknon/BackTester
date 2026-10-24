@@ -14,6 +14,8 @@ import {
   parseOptionSymbol,
   quoteOption,
   shortOptionMargin,
+  portfolioOptionMargin,
+  type PmLeg,
   atmIv,
   eventVariance,
   optionYears,
@@ -384,12 +386,72 @@ export class Exchange {
     return pos.size * (this.price(pos.symbol) - pos.avgPrice);
   }
 
+  /** Режим маржи опционов (в старых сохранениях поля нет — стандартный). */
+  get optionMarginMode(): 'portfolio' | 'regular' {
+    return this.config.options.marginMode ?? 'regular';
+  }
+
+  private pmMemo = new Map<string, { im: number; mm: number; regIm: number; regMm: number }>();
+  private pmMemoNow = NaN;
+
+  /**
+   * Маржа опционов аккаунта по одному базовому активу: стандартная (сумма по проданным ногам) и итоговая —
+   * в портфельном режиме по худшему сценарию всей книги, но не больше стандартной.
+   * extra — гипотетические изменения позиций (проверка ордера или стратегии до исполнения).
+   */
+  optionGroupMargin(acc: Account, underlying: string, extra?: { symbol: string; size: number } | { symbol: string; size: number }[]) {
+    const S = this.price(underlying);
+    const sizes = new Map<string, number>();
+    for (const p of Object.values(acc.positions))
+      if (p.category === 'option' && p.size !== 0 && this.optionInstrument(p.symbol)?.underlying === underlying) sizes.set(p.symbol, p.size);
+    for (const e of extra ? (Array.isArray(extra) ? extra : [extra]) : []) sizes.set(e.symbol, (sizes.get(e.symbol) ?? 0) + e.size);
+    const key = extra ? '' : `${acc.id}|${underlying}|${S}|${[...sizes].map(([k, v]) => `${k}:${v}`).join(',')}`;
+    if (this.pmMemoNow !== this.state.now) {
+      this.pmMemo.clear();
+      this.pmMemoNow = this.state.now;
+    }
+    const hit = key ? this.pmMemo.get(key) : undefined;
+    if (hit) return hit;
+    let regIm = 0;
+    let regMm = 0;
+    const legs: PmLeg[] = [];
+    for (const [sym, size] of sizes) {
+      if (Math.abs(size) < EPS) continue;
+      const q = this.optionQuote(sym, S);
+      if (!q) continue;
+      if (size < 0) {
+        const m = shortOptionMargin(this.config.options, q.inst, S, q.mark);
+        regIm += m.im * -size;
+        regMm += m.mm * -size;
+      }
+      legs.push({ type: q.inst.type, strike: q.inst.strike, size, mark: q.mark, iv: q.iv, T: q.T });
+    }
+    let out = { im: regIm, mm: regMm, regIm, regMm };
+    if (this.optionMarginMode === 'portfolio' && regMm > 0) {
+      const pm = portfolioOptionMargin(legs, S);
+      out = { im: Math.min(regIm, pm.im), mm: Math.min(regMm, pm.mm), regIm, regMm };
+    }
+    if (key) this.pmMemo.set(key, out);
+    return out;
+  }
+
+  /** Доля портфельной маржи от стандартной для проданного опциона (1 — без зачёта). */
+  private optionMarginShare(pos: Position, kind: 'im' | 'mm'): number {
+    if (this.optionMarginMode !== 'portfolio') return 1;
+    const acc = Object.values(this.state.accounts).find((a) => a.positions[pos.symbol] === pos);
+    const u = this.optionInstrument(pos.symbol)?.underlying;
+    if (!acc || !u) return 1;
+    const g = this.optionGroupMargin(acc, u);
+    const reg = kind === 'im' ? g.regIm : g.regMm;
+    return reg > 0 ? (kind === 'im' ? g.im : g.mm) / reg : 1;
+  }
+
   positionIM(pos: Position): number {
     if (pos.category === 'option') {
       if (pos.size >= 0) return 0;
       const inst = this.optionInstrument(pos.symbol)!;
       const S = this.price(inst.underlying);
-      return shortOptionMargin(this.config.options, inst, S, this.optionMark(pos.symbol, S)).im * -pos.size;
+      return shortOptionMargin(this.config.options, inst, S, this.optionMark(pos.symbol, S)).im * -pos.size * this.optionMarginShare(pos, 'im');
     }
     if (pos.marginMode === 'isolated') return pos.isolatedMargin;
     return (Math.abs(pos.size) * this.price(pos.symbol)) / pos.leverage;
@@ -400,7 +462,7 @@ export class Exchange {
       if (pos.size >= 0) return 0;
       const inst = this.optionInstrument(pos.symbol)!;
       const S = this.price(inst.underlying);
-      return shortOptionMargin(this.config.options, inst, S, this.optionMark(pos.symbol, S)).mm * -pos.size;
+      return shortOptionMargin(this.config.options, inst, S, this.optionMark(pos.symbol, S)).mm * -pos.size * this.optionMarginShare(pos, 'mm');
     }
     const px = this.price(pos.symbol);
     return Math.abs(pos.size) * px * (maintenanceMarginRate(pos.symbol) + this.config.fees.linearTaker);
@@ -1146,7 +1208,14 @@ export class Exchange {
     if (openQty > 0 && !o.reduceOnly) {
       const fee = optionFee(this.config.fees.optionTaker, this.config.fees.optionFeeCap, q.underlyingPrice, refPrice, openQty);
       let need: number;
-      if (o.side === 'Buy') need = openQty * refPrice + fee;
+      if (this.optionMarginMode === 'portfolio') {
+        // портфельная маржа: нужна разница IM всей книги по активу до и после сделки
+        // (купленное крыло её уменьшает, поэтому проданная после него нога требует меньше)
+        const dir = o.side === 'Buy' ? 1 : -1;
+        const before = this.optionGroupMargin(acc, inst.underlying).im;
+        const after = this.optionGroupMargin(acc, inst.underlying, { symbol: o.symbol, size: dir * o.qty }).im;
+        need = after - before + fee + (o.side === 'Buy' ? openQty * refPrice : openQty * Math.max(0, q.mark - refPrice));
+      } else if (o.side === 'Buy') need = openQty * refPrice + fee;
       else {
         // премия зачисляется на кошелёк, но и обязательство по опциону (mark) уменьшает капитал на столько же,
         // поэтому премия не покрывает маржу: нужна полная IM (+ потеря на спреде, если продаём ниже mark)
@@ -1620,6 +1689,7 @@ export class Exchange {
 
   /** Кросс-ликвидация: закрываются все кросс-позиции и опционы аккаунта. */
   liquidateCross(acc: Account, reason = 'кросс-маржа') {
+    const at = this.core(acc);
     // в страховой фонд уходит только поддерживающая маржа кросс-перпетуалов (разница между ценой
     // ликвидации и банкротства); опционы закрываются по mark без дополнительного списания
     let mm = 0;
@@ -1652,7 +1722,7 @@ export class Exchange {
     acc.stats.liquidations++;
     for (const o of this.activeOrders(acc.id)) if (o.category !== 'spot') this.cancelOrder(o.id, 'Ликвидация');
     const label = symbols.length === 1 ? symbols[0] : symbols.length ? `${symbols.join(', ')} (${reason})` : reason;
-    this.emit({ type: 'liquidation', accountId: acc.id, symbol: label, loss: Math.max(0, walletBefore - acc.walletBalance) });
+    this.emit({ type: 'liquidation', accountId: acc.id, symbol: label, loss: Math.max(0, walletBefore - acc.walletBalance), equity: at.crossEquity, mm: at.mm });
     this.onLiquidated(acc);
   }
 

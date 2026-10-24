@@ -213,6 +213,12 @@ export interface OptionModelConfig {
   imRate: number;
   imMinRate: number;
   mmRate: number;
+  /**
+   * Маржа опционов: portfolio — по худшему сценарию для всей книги по активу (как Portfolio Margin Bybit,
+   * купленные крылья уменьшают требование), но не больше стандартной; regular — каждая проданная нога
+   * отдельно (Regular Margin). В старых сохранениях поля нет — там regular.
+   */
+  marginMode?: 'portfolio' | 'regular';
 }
 
 export interface SessionConfig {
@@ -260,6 +266,7 @@ export const DEFAULT_OPTION_MODEL: OptionModelConfig = {
   imRate: 0.15,
   imMinRate: 0.1,
   mmRate: 0.075,
+  marginMode: 'portfolio',
 };
 
 export interface PlaceOrderRequest {
@@ -314,7 +321,7 @@ export type ExchangeEvent =
   | { type: 'fill'; exec: Execution; order?: Order }
   | { type: 'order'; order: Order }
   | { type: 'reject'; order: Order; reason: string }
-  | { type: 'liquidation'; accountId: string; symbol: string; loss: number }
+  | { type: 'liquidation'; accountId: string; symbol: string; loss: number; /** кросс: капитал и поддерживающая маржа в момент ликвидации */ equity?: number; mm?: number }
   | { type: 'funding'; accountId: string; symbol: string; amount: number }
   /** экспирация: все опционы аккаунта, рассчитанные в один момент (например, все ноги стратегии) */
   | { type: 'expiry'; accountId: string; time: number; items: ExpiryItem[]; total: number }

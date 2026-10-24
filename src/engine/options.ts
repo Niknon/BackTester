@@ -420,6 +420,61 @@ export function shortOptionMargin(cfg: OptionModelConfig, inst: OptionInstrument
   return { im, mm };
 }
 
+/**
+ * Портфельная маржа (по образцу Portfolio Margin Bybit/Deribit): книга опционов одного базового актива
+ * переоценивается при движениях цены ±range (шагами) и сдвигах волатильности; маржа — худший убыток книги
+ * плюс надбавка за непокрытые проданные опционы. Купленные крылья, спреды и календари так уменьшают
+ * требование до реального риска, а в стандартном режиме каждая проданная нога маржируется отдельно.
+ */
+export const PORTFOLIO_MARGIN = {
+  /** диапазон движения цены (доля) */
+  range: 0.15,
+  /** шагов в каждую сторону */
+  steps: 6,
+  /** сдвиги IV (множители) */
+  volShocks: [1, 1.3, 0.75],
+  /** надбавка за каждый непокрытый проданный контракт (доля цены базового актива) */
+  shortRate: 0.01,
+  /** IM = MM × imMult */
+  imMult: 1.25,
+};
+
+export interface PmLeg {
+  type: 'C' | 'P';
+  strike: number;
+  /** количество со знаком: + куплено, − продано */
+  size: number;
+  /** текущая цена (mark) */
+  mark: number;
+  iv: number;
+  /** время до экспирации, лет */
+  T: number;
+}
+
+/** Портфельная поддерживающая и начальная маржа книги опционов одного актива при цене S. */
+export function portfolioOptionMargin(legs: PmLeg[], S: number, pm = PORTFOLIO_MARGIN): { mm: number; im: number } {
+  if (!legs.length || !(S > 0)) return { mm: 0, im: 0 };
+  const v0 = legs.reduce((x, l) => x + l.size * l.mark, 0);
+  let worst = 0;
+  for (let k = -pm.steps; k <= pm.steps; k++) {
+    const x = S * (1 + (pm.range * k) / pm.steps);
+    for (const shock of pm.volShocks) {
+      let v = 0;
+      for (const l of legs) v += l.size * blackScholes(x, l.strike, l.T, l.iv * shock, l.type).price;
+      worst = Math.max(worst, v0 - v);
+    }
+  }
+  // непокрытые проданные: продано больше, чем куплено того же типа (каждая сторона отдельно)
+  let netC = 0;
+  let netP = 0;
+  for (const l of legs) {
+    if (l.type === 'C') netC += l.size;
+    else netP += l.size;
+  }
+  const mm = worst + pm.shortRate * S * (Math.max(0, -netC) + Math.max(0, -netP));
+  return { mm, im: mm * pm.imMult };
+}
+
 export function intrinsicValue(inst: OptionInstrument, S: number) {
   return inst.type === 'C' ? Math.max(0, S - inst.strike) : Math.max(0, inst.strike - S);
 }

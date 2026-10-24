@@ -494,6 +494,19 @@ export function SetupPage() {
                   <NumInput label="Скос (skew)" value={opt.skew} step={0.01} min={-SKEW_MAX} max={SKEW_MAX} title={`Наклон улыбки: от −${SKEW_MAX} до ${SKEW_MAX} (отрицательный — путы дороже)`} onChange={(v) => setOpt({ ...opt, skew: Math.max(-SKEW_MAX, Math.min(SKEW_MAX, Number(v) || 0)) })} />
                   <NumInput label="Улыбка (smile)" value={opt.smile} step={0.01} min={0} max={SMILE_MAX} title={`Кривизна улыбки: от 0 до ${SMILE_MAX}`} onChange={(v) => setOpt({ ...opt, smile: Math.max(0, Math.min(SMILE_MAX, Number(v) || 0)) })} />
                   <NumInput label="Спред bid/ask" suffix="%" value={opt.spreadPct * 100} step={0.5} onChange={(v) => setOpt({ ...opt, spreadPct: (Number(v) || 0) / 100 })} />
+                  <Select
+                    label={
+                      <span title="Портфельная (Portfolio Margin Bybit): худший убыток всей книги по активу при ±15% цены и сдвигах IV — купленные крылья уменьшают маржу. Стандартная (Regular): каждая проданная нога отдельно (mark + 7.5% цены актива).">
+                        Маржа опционов ⓘ
+                      </span>
+                    }
+                    value={opt.marginMode ?? 'portfolio'}
+                    onChange={(v) => setOpt({ ...opt, marginMode: v })}
+                    options={[
+                      { value: 'portfolio', label: 'Портфельная (PM)' },
+                      { value: 'regular', label: 'Стандартная (Regular)' },
+                    ]}
+                  />
                 </div>
               </>
             )}

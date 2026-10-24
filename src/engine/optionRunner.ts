@@ -14,7 +14,7 @@ import { getAsset, optionsAvailable, roundToStep } from '../data/assets';
 import { Exchange, MAIN } from './exchange';
 import type { MarketData } from './market';
 import { computeReport, type EquitySample, type PerformanceReport } from './metrics';
-import { atmIv, eventVariance, optionFee, optionQtyStep, optionSymbol, shortOptionMargin, withEvents, type OptionQuote } from './options';
+import { atmIv, eventVariance, optionFee, optionQtyStep, optionSymbol, portfolioOptionMargin, shortOptionMargin, withEvents, type OptionQuote, type PmLeg } from './options';
 import type { ResolvedLeg } from './optionStrategies';
 import type { ClosedPnlRecord, SessionConfig, Side } from './types';
 
@@ -162,6 +162,12 @@ export interface OsSettings {
   hedgeBand: number;
   /** проверять хедж не чаще, чем раз в N часов (0 — каждую свечу) */
   hedgeHours: number;
+  /**
+   * Маржа опционов: portfolio — по худшему сценарию всей книги (Portfolio Margin Bybit: купленные крылья
+   * уменьшают требование до реального риска); regular — каждая проданная нога отдельно (Regular Margin).
+   * Нет в старых сохранённых настройках — portfolio.
+   */
+  marginMode?: 'portfolio' | 'regular';
 }
 
 export const DEFAULT_OS: Omit<OsSettings, 'underlyings' | 'initialBalance'> = {
@@ -202,6 +208,7 @@ export const DEFAULT_OS: Omit<OsSettings, 'underlyings' | 'initialBalance'> = {
   hedge: false,
   hedgeBand: 0.1,
   hedgeHours: 4,
+  marginMode: 'portfolio',
 };
 
 export interface OsPreset {
@@ -386,11 +393,13 @@ export function payoffAt(legs: ResolvedLeg[], S0: number, ST: number) {
   return v;
 }
 
-export function unitEconomics(ex: Exchange, legs: ResolvedLeg[], S: number): UnitEconomics {
+export function unitEconomics(ex: Exchange, legs: ResolvedLeg[], S: number, marginMode = ex.optionMarginMode): UnitEconomics {
   const fees = ex.config.fees;
   let premium = 0;
   let fee = 0;
   let margin = 0;
+  let regIm = 0;
+  const pmLegs: PmLeg[] = [];
   let slope = 0;
   const pts = new Set<number>([0]);
   for (const l of legs) {
@@ -410,9 +419,14 @@ export function unitEconomics(ex: Exchange, legs: ResolvedLeg[], S: number): Uni
     else {
       const inst = ex.optionInstrument(l.symbol)!;
       const m = shortOptionMargin(ex.config.options, inst, S, l.mark);
-      margin += m.im + Math.max(0, l.mark - l.price) + f;
+      regIm += m.im;
+      margin += Math.max(0, l.mark - l.price) + f;
     }
+    const q = ex.optionQuote(l.symbol, S);
+    if (q) pmLegs.push({ type: l.type, strike: l.strike, size: sg, mark: q.mark, iv: q.iv, T: q.T });
   }
+  // маржа продаж: стандартная — по каждой проданной ноге; портфельная — по худшему сценарию всей конструкции
+  margin += marginMode === 'portfolio' && regIm > 0 ? Math.min(regIm, portfolioOptionMargin(pmLegs, S).im) : regIm;
   const xs = [...pts].sort((a, b) => a - b);
   const hi = Math.max(S, xs[xs.length - 1]) * 3;
   xs.push(hi);
@@ -715,7 +729,12 @@ export async function runOptionStrategy(market: MarketData, sessionCfg: SessionC
     assets.push({ u, base: spec.base, qtyStep: spec.qtyStep, minQty: spec.minQty, lastEntryDay: -1, lastMaxOpenDay: -1, lastHedge: -Infinity });
   }
   const st = OS_BY_KEY[s.structure];
-  const config: SessionConfig = { ...sessionCfg, initialBalance: s.initialBalance, symbols: unders };
+  const config: SessionConfig = {
+    ...sessionCfg,
+    initialBalance: s.initialBalance,
+    symbols: unders,
+    options: { ...sessionCfg.options, marginMode: s.marginMode ?? 'portfolio' },
+  };
   const ex = Exchange.create(config, market);
   ex.quiet = true;
   ex.activeSymbols = unders;
@@ -728,6 +747,7 @@ export async function runOptionStrategy(market: MarketData, sessionCfg: SessionC
   let seq = 0;
   let halted: string | undefined;
   let liquidated = false;
+  let liqInfo: { equity?: number; mm?: number } | null = null;
 
   const deliveryFee = (S: number, payoff: number, qty: number) =>
     payoff > 0 ? Math.min(config.fees.optionDelivery * S * qty, config.fees.optionFeeCap * payoff * qty) : 0;
@@ -748,7 +768,10 @@ export async function runOptionStrategy(market: MarketData, sessionCfg: SessionC
   // цена расчёта по экспирациям (из события биржи); запасной вариант — открытие свечи, в которой наступила экспирация
   const settlePx = new Map<string, number>();
   ex.on((e) => {
-    if (e.type === 'liquidation' && e.accountId === MAIN) liquidated = true;
+    if (e.type === 'liquidation' && e.accountId === MAIN) {
+      liquidated = true;
+      liqInfo = e;
+    }
     if (e.type === 'expiry' && e.accountId === MAIN)
       for (const it of e.items) {
         const inst = ex.optionInstrument(it.symbol);
@@ -1125,7 +1148,12 @@ export async function runOptionStrategy(market: MarketData, sessionCfg: SessionC
       g.closeTime = ex.now;
       g.S1 = S;
     }
-    halted = `Ликвидация ${new Date(ex.now).toISOString().slice(0, 16).replace('T', ' ')} UTC — стратегия остановлена`;
+    const why =
+      liqInfo?.equity !== undefined && liqInfo.mm !== undefined
+        ? `: капитал ${fmt(liqInfo.equity)} USDT опустился до поддерживающей маржи ${fmt(liqInfo.mm)} USDT` +
+          (config.options.marginMode === 'regular' ? ' (стандартная маржа: каждая проданная нога маржируется отдельно, купленные крылья не учитываются)' : '')
+        : '';
+    halted = `Ликвидация ${new Date(ex.now).toISOString().slice(0, 16).replace('T', ' ')} UTC${why} — позиции закрыты по рынку, стратегия остановлена`;
     say(halted);
   };
 
@@ -1427,7 +1455,8 @@ export async function runOptionSweep(
 export function previewEntry(ex: Exchange, s: OsSettings, underlying = s.underlyings[0]) {
   const pick = pickLegs(ex, s, 1, underlying);
   if (pick.error) return { error: pick.error, pick };
-  const eco = unitEconomics(ex, pick.legs, pick.S);
+  // маржа — по режиму стратегии, а не ручной сессии
+  const eco = unitEconomics(ex, pick.legs, pick.S, s.marginMode ?? 'portfolio');
   // объём — от депозита стратегии, а не от счёта ручной сессии
   const size = sizeFor(ex, s, eco, pick.S, { equity: s.initialBalance, available: s.initialBalance }, underlying);
   const legs = size.qty > 0 ? scaleLegs(pick.legs, size.qty) : pick.legs;
